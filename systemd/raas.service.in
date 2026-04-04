@@ -1,0 +1,19 @@
+[Unit]
+Description=RAAS Real-Time Linux Access Monitoring Agent
+Documentation=file://@INSTALL_ROOT@/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=@INSTALL_ROOT@
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=@INSTALL_ROOT@
+ExecStart=@INSTALL_ROOT@/.venv/bin/python @INSTALL_ROOT@/raas.py --config @INSTALL_ROOT@/config/config.yaml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse, urlunparse
+
+import yaml
+
+from utils.ip_allowlist import load_ignore_rules_from_config
+from utils.linux_paths import parse_log_path_config
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class JournalConfig:
+    """Arguments passed to `journalctl` when log.backend is journal (include -f)."""
+
+    journalctl_args: list[str] = field(default_factory=list)
+
+
+@dataclass
+class LogConfig:
+    path: Path
+    backend: str = "file"
+    tail_from_end: bool = True
+    poll_interval_seconds: float = 0.2
+    journal: JournalConfig = field(default_factory=JournalConfig)
+
+
+@dataclass
+class TelegramConfig:
+    """All Telegram delivery settings (API endpoint + credentials + target chat)."""
+
+    enabled: bool = True
+    api_base_url: str = "https://api.telegram.org"
+    bot_token: str = ""
+    chat_id: str = ""
+    timeout_seconds: float = 15.0
+
+
+@dataclass
+class WebhookConfig:
+    """Optional HTTP POST (JSON) for SIEM / Slack-compatible receivers / custom endpoints."""
+
+    enabled: bool = False
+    url: str = ""
+    timeout_seconds: float = 10.0
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class RiskConfig:
+    notify_threshold: int = 15
+    notify_threshold_by_kind: dict[str, int] = field(default_factory=dict)
+    night_start: int = 22
+    night_end: int = 6
+    night_timezone: str = "UTC"
+    night_bonus: int = 10
+    scores: dict[str, int] = field(default_factory=dict)
+    ignore_networks: tuple[Any, ...] = ()  # ipaddress networks; filled by load_settings
+
+
+@dataclass
+class AlarmLogConfig:
+    """Separate file for alerts that met the risk threshold (JSON Lines)."""
+
+    enabled: bool = True
+    path: Path = field(default_factory=lambda: Path("/var/log/raas/alarms.jsonl"))
+
+
+@dataclass
+class LockIntrusionConfig:
+    """When enabled, input activity while the screen is locked triggers alerts (and throttled media)."""
+
+    enabled: bool = True
+    # Minimum seconds between any two input-based notifications (0 = as fast as possible).
+    cooldown_seconds: float = 0.0
+    # Mouse movement (EV_REL) fires very often; throttle move alerts (0 = every move batch).
+    pointer_move_throttle_seconds: float = 0.12
+    # Minimum seconds between screen/webcam captures (text alerts are not limited by this).
+    media_cooldown_seconds: float = 2.5
+    # Poll auth.log for failed greeter / lock-screen PAM failures while locked.
+    watch_auth_failures: bool = True
+    auth_poll_interval_seconds: float = 0.35
+    auth_failure_min_interval_seconds: float = 0.4
+    # Notify when lock state goes from locked -> unlocked (successful unlock).
+    notify_on_unlock: bool = True
+    unlock_poll_interval_seconds: float = 0.35
+    camera_device: str = "/dev/video0"
+    prefer_ffmpeg: bool = True
+    capture_width: int | None = None
+    capture_height: int | None = None
+    capture_screen: bool = True
+    capture_webcam: bool = True
+    desktop_uid: int | None = None
+
+
+@dataclass
+class HealthConfig:
+    """Minimal JSON HTTP endpoint for ops (localhost by default)."""
+
+    enabled: bool = False
+    bind: str = "127.0.0.1"
+    port: int = 8765
+
+
+@dataclass
+class Settings:
+    """Loaded entirely from the YAML config file (see config.yaml.example)."""
+
+    log: LogConfig
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    webhook: WebhookConfig = field(default_factory=WebhookConfig)
+    risk: RiskConfig = field(default_factory=RiskConfig)
+    alarm_log: AlarmLogConfig = field(default_factory=AlarmLogConfig)
+    lock_intrusion: LockIntrusionConfig = field(default_factory=LockIntrusionConfig)
+    health: HealthConfig = field(default_factory=HealthConfig)
+
+
+def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for k, v in override.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _merge_dict(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _normalize_telegram_api_base(url: str) -> str:
+    """
+    Telegram Bot API URLs must be built as {base}/bot{token}/method.
+    If api_base_url mistakenly includes /bot or /bot<token> (common copy-paste),
+    requests hit .../bot/botTOKEN/... and Telegram returns 404 Not Found.
+    """
+    u = (url or "").strip()
+    if not u:
+        return "https://api.telegram.org"
+    if "://" not in u:
+        u = "https://" + u
+    parsed = urlparse(u)
+    path = (parsed.path or "").rstrip("/")
+    if path == "/bot" or path.startswith("/bot"):
+        fixed = urlunparse((parsed.scheme or "https", parsed.netloc, "", "", "", "")).rstrip("/")
+        logger.warning(
+            "telegram.api_base_url must not contain /bot (use https://api.telegram.org only; "
+            "token goes in bot_token). Normalized to %s",
+            fixed,
+        )
+        return fixed or "https://api.telegram.org"
+    out = u.rstrip("/")
+    return out or "https://api.telegram.org"
+
+
+def _parse_scores(risk_cfg: dict[str, Any]) -> dict[str, int]:
+    raw = risk_cfg.get("scores")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _parse_threshold_by_kind(risk_cfg: dict[str, Any]) -> dict[str, int]:
+    raw = risk_cfg.get("notify_threshold_by_kind")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def load_settings(config_path: Path | None = None) -> Settings:
+    """Load all settings from a single YAML file. No environment-variable overrides."""
+    base_dir = Path(__file__).resolve().parent
+    if config_path is not None:
+        path = config_path
+    else:
+        # Packaged install: /opt/raas/config/config.yaml; dev: config/config.yaml beside this package
+        installed = Path("/opt/raas/config/config.yaml")
+        if installed.is_file():
+            path = installed
+        else:
+            path = base_dir / "config.yaml"
+
+    cfg: dict[str, Any] = {}
+    if path.is_file():
+        with open(path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+
+    legacy_log = {
+        k: v
+        for k, v in {
+            "path": cfg.get("log_path"),
+            "tail_from_end": cfg.get("tail_from_end"),
+            "poll_interval_seconds": cfg.get("poll_interval_seconds"),
+        }.items()
+        if v is not None
+    }
+    raw_log = cfg.get("log")
+    nested_log = dict(raw_log) if isinstance(raw_log, dict) else {}
+    log_block = _merge_dict(legacy_log, nested_log)
+
+    log_path = parse_log_path_config(log_block.get("path"))
+    backend = str(log_block.get("backend", "file") or "file").strip().lower()
+    if backend not in ("file", "journal"):
+        backend = "file"
+
+    journal_raw = log_block.get("journal") if isinstance(log_block.get("journal"), dict) else {}
+    jc_args = journal_raw.get("journalctl_args")
+    journalctl_args: list[str] = (
+        [str(x) for x in jc_args] if isinstance(jc_args, list) else []
+    )
+
+    tail_from_end = bool(log_block.get("tail_from_end", True))
+    poll_interval_seconds = max(0.05, float(log_block.get("poll_interval_seconds", 0.2)))
+
+    tg_block = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
+    telegram = TelegramConfig(
+        enabled=bool(tg_block.get("enabled", True)),
+        api_base_url=_normalize_telegram_api_base(str(tg_block.get("api_base_url", "https://api.telegram.org"))),
+        bot_token=str(tg_block.get("bot_token", "") or ""),
+        chat_id=str(tg_block.get("chat_id", "") or ""),
+        timeout_seconds=float(tg_block.get("timeout_seconds", 15.0)),
+    )
+
+    wh_block = cfg.get("webhook") if isinstance(cfg.get("webhook"), dict) else {}
+    wh_headers = wh_block.get("headers")
+    webhook = WebhookConfig(
+        enabled=bool(wh_block.get("enabled", False)),
+        url=str(wh_block.get("url", "") or ""),
+        timeout_seconds=float(wh_block.get("timeout_seconds", 10.0)),
+        headers={str(k): str(v) for k, v in wh_headers.items()} if isinstance(wh_headers, dict) else {},
+    )
+
+    risk_cfg = cfg.get("risk") if isinstance(cfg.get("risk"), dict) else {}
+    notify_threshold = int(risk_cfg.get("notify_threshold", 15))
+    night_start = int(risk_cfg.get("night_start", 22))
+    night_end = int(risk_cfg.get("night_end", 6))
+    night_timezone = str(risk_cfg.get("night_timezone", "UTC") or "UTC").strip() or "UTC"
+    night_bonus = int(risk_cfg.get("night_bonus", 10))
+    scores = _parse_scores(risk_cfg)
+    notify_threshold_by_kind = _parse_threshold_by_kind(risk_cfg)
+    ignore_ips_raw = risk_cfg.get("ignore_source_ips")
+    ignore_networks = tuple(load_ignore_rules_from_config(ignore_ips_raw))
+
+    risk = RiskConfig(
+        notify_threshold=notify_threshold,
+        notify_threshold_by_kind=notify_threshold_by_kind,
+        night_start=night_start,
+        night_end=night_end,
+        night_timezone=night_timezone,
+        night_bonus=night_bonus,
+        scores=scores,
+        ignore_networks=ignore_networks,
+    )
+
+    al = cfg.get("alarm_log") if isinstance(cfg.get("alarm_log"), dict) else {}
+    alarm_log = AlarmLogConfig(
+        enabled=bool(al.get("enabled", True)),
+        path=Path(str(al.get("path", "/var/log/raas/alarms.jsonl"))).expanduser(),
+    )
+
+    li = cfg.get("lock_intrusion") if isinstance(cfg.get("lock_intrusion"), dict) else {}
+    lock_intrusion = LockIntrusionConfig(
+        enabled=bool(li.get("enabled", True)),
+        cooldown_seconds=float(li.get("cooldown_seconds", 0.0)),
+        pointer_move_throttle_seconds=float(li.get("pointer_move_throttle_seconds", 0.12)),
+        media_cooldown_seconds=float(li.get("media_cooldown_seconds", 2.5)),
+        watch_auth_failures=bool(li.get("watch_auth_failures", True)),
+        auth_poll_interval_seconds=float(li.get("auth_poll_interval_seconds", 0.35)),
+        auth_failure_min_interval_seconds=float(li.get("auth_failure_min_interval_seconds", 0.4)),
+        notify_on_unlock=bool(li.get("notify_on_unlock", True)),
+        unlock_poll_interval_seconds=float(li.get("unlock_poll_interval_seconds", 0.35)),
+        camera_device=str(li.get("camera_device", "/dev/video0")),
+        prefer_ffmpeg=bool(li.get("prefer_ffmpeg", True)),
+        capture_width=int(li["capture_width"]) if li.get("capture_width") is not None else None,
+        capture_height=int(li["capture_height"]) if li.get("capture_height") is not None else None,
+        capture_screen=bool(li.get("capture_screen", True)),
+        capture_webcam=bool(li.get("capture_webcam", True)),
+        desktop_uid=int(li["desktop_uid"]) if li.get("desktop_uid") is not None else None,
+    )
+
+    hb = cfg.get("health") if isinstance(cfg.get("health"), dict) else {}
+    health = HealthConfig(
+        enabled=bool(hb.get("enabled", False)),
+        bind=str(hb.get("bind", "127.0.0.1") or "127.0.0.1"),
+        port=int(hb.get("port", 8765)),
+    )
+
+    return Settings(
+        log=LogConfig(
+            path=log_path,
+            backend=backend,
+            tail_from_end=tail_from_end,
+            poll_interval_seconds=poll_interval_seconds,
+            journal=JournalConfig(journalctl_args=journalctl_args),
+        ),
+        telegram=telegram,
+        webhook=webhook,
+        risk=risk,
+        alarm_log=alarm_log,
+        lock_intrusion=lock_intrusion,
+        health=health,
+    )

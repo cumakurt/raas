@@ -1,0 +1,90 @@
+# RAAS — copy to config.yaml and fill in values. All runtime settings live here.
+#
+# System tools (optional, for lock-intrusion + Telegram photos):
+#   - dbus / gdbus, util-linux (runuser) — lock detection when running as root
+#   - grim (Wayland) or ffmpeg / ImageMagick (X11) — screen capture
+#   - ffmpeg — webcam; input group — /dev/input (if not root)
+# Full per-distro list: DEPENDENCIES.md and DEPENDENCIES.tr.md in the repository root.
+
+log:
+  # Use "auto" to pick the first existing file among /var/log/auth.log (Debian/Ubuntu) and /var/log/secure (RHEL/Fedora)
+  path: auto
+  # file = tail auth log file; journal = stream `journalctl` (requires systemd)
+  backend: file
+  tail_from_end: true
+  poll_interval_seconds: 0.2
+  # When backend is journal, optional args (default: -f -n 0 -o cat). Example filter: SYSLOG_FACILITY=10
+  # journal:
+  #   journalctl_args: ["-f", "-n", "0", "-o", "cat", "SYSLOG_FACILITY=10"]
+
+# Telegram Bot API: token from @BotFather, chat_id = destination (user, group, or channel).
+# api_base_url must be the origin only (https://api.telegram.org) — do NOT append /bot or the token
+# (that causes 404 Not Found; RAAS builds .../bot<token>/sendMessage itself).
+telegram:
+  enabled: true
+  api_base_url: https://api.telegram.org
+  bot_token: "REPLACE_WITH_BOT_TOKEN"
+  chat_id: "REPLACE_WITH_CHAT_ID"
+  timeout_seconds: 15
+
+# Optional second channel: HTTP POST JSON (schema raas.alert.v1) for SIEM / custom receiver.
+# Runs in parallel with Telegram when both are enabled.
+# webhook:
+#   enabled: false
+#   url: "https://example.com/raas-alerts"
+#   timeout_seconds: 10
+#   headers:
+#     Authorization: "Bearer YOUR_TOKEN"
+
+risk:
+  notify_threshold: 15
+  # Per-event-kind threshold (overrides notify_threshold for that kind only)
+  # notify_threshold_by_kind:
+  #   ssh_accepted: 35
+  # IANA timezone for night window (e.g. Europe/Istanbul). Default UTC.
+  # night_timezone: UTC
+  # night_start: 22
+  # night_end: 6
+  # night_bonus: 10
+  # Optional base scores (0–100) by event kind (see parser EventKind values)
+  # scores:
+  #   ssh_failed: 45
+  #   ssh_accepted: 25
+  # CIDR or single IP — no alerts for these remote addresses (still parsed for dedup before filter)
+  # ignore_source_ips:
+  #   - "10.0.0.0/8"
+  #   - "192.168.1.1"
+
+# JSON Lines file: each line is one alarm that crossed risk.notify_threshold (auth log),
+# or a lock-intrusion capture. Includes whether Telegram delivery succeeded.
+alarm_log:
+  enabled: true
+  path: /var/log/raas/alarms.jsonl
+
+# GET http://127.0.0.1:8765/health — JSON status (ops / monitoring)
+health:
+  enabled: false
+  bind: "127.0.0.1"
+  port: 8765
+
+# Lock intrusion: evdev + readable /dev/input; OS tools in DEPENDENCIES*.md for screen/webcam.
+# Text alerts can be frequent; screen/webcam are throttled (media_cooldown_seconds) to reduce Telegram rate limits.
+# Password characters are never read from the keyboard; failed unlock attempts are inferred from auth.log when possible.
+lock_intrusion:
+  enabled: true
+  cooldown_seconds: 0
+  pointer_move_throttle_seconds: 0.12
+  media_cooldown_seconds: 2.5
+  watch_auth_failures: true
+  auth_poll_interval_seconds: 0.35
+  auth_failure_min_interval_seconds: 0.4
+  notify_on_unlock: true
+  unlock_poll_interval_seconds: 0.35
+  camera_device: /dev/video0
+  prefer_ffmpeg: true
+  # Screen: grim (Wayland) or ffmpeg x11grab / ImageMagick import (X11). Webcam: ffmpeg or OpenCV.
+  capture_screen: true
+  capture_webcam: true
+  # desktop_uid: 1000   # optional; omit = auto (first graphical session / DBus uid)
+  # capture_width: 1280
+  # capture_height: 720

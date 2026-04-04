@@ -1,0 +1,39 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Local config (secrets: bot token, webhook URL, etc.) — use config.yaml.example
+config/config.yaml
+
+# Test / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Environment files (if used)
+.env
+.env.*
