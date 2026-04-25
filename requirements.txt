@@ -3,7 +3,7 @@
 # Optional OS packages for full features (DBus, grim/ffmpeg, input group):
 #   See DEPENDENCIES.md (EN) and DEPENDENCIES.tr.md (TR)
 
-requests>=2.28.0
+requests>=2.33.1
 PyYAML>=6.0
 evdev>=1.6.0
 opencv-python-headless>=4.8.0
