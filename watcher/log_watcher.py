@@ -25,7 +25,7 @@ def follow_file_lines(
     path: Path,
     *,
     tail_from_end: bool = True,
-    poll_interval_seconds: float = 0.2,
+    poll_interval_seconds: float = 0.8,
     encoding: str = "utf-8",
     errors: str = "replace",
     stop_event: threading.Event | None = None,

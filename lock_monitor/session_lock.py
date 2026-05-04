@@ -20,7 +20,13 @@ _runuser_missing_logged = False
 
 _CACHE: tuple[bool | None, float] = (None, 0.0)
 _CACHE_LOCK = threading.Lock()
-_CACHE_TTL_SEC = 0.15
+_CACHE_TTL_SEC = 0.45
+
+
+def set_lock_cache_ttl(seconds: float) -> None:
+    """How long is_session_locked(use_cache=True) may reuse a verdict (config: lock_intrusion.lock_state_cache_ttl_seconds)."""
+    global _CACHE_TTL_SEC
+    _CACHE_TTL_SEC = max(0.05, min(3.0, float(seconds)))
 
 # Session screensaver / lock — GetActive == True means lock screen or saver is active.
 # systemd LockedHint is often "no" on GNOME/MATE/XFCE even when the screen is locked.

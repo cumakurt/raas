@@ -12,7 +12,8 @@ log:
   # file = tail auth log file; journal = stream `journalctl` (requires systemd)
   backend: file
   tail_from_end: true
-  poll_interval_seconds: 0.2
+  # Higher = less CPU when the log is idle (lower bound 0.05s). Default tuned for low background load.
+  poll_interval_seconds: 0.8
   # When backend is journal, optional args (default: -f -n 0 -o cat). Example filter: SYSLOG_FACILITY=10
   # journal:
   #   journalctl_args: ["-f", "-n", "0", "-o", "cat", "SYSLOG_FACILITY=10"]
@@ -82,6 +83,11 @@ health:
 prometheus:
   enabled: false
 
+# CPU footprint: lower scheduling priority at startup; tighter defaults are in code for poll/evdev.
+# Hard cap (e.g. max 5% one vCPU) needs systemd: drop-in with CPUQuota=5% on raas.service — not enforced by Python alone.
+resource:
+  process_nice: 10
+
 # Suppress Telegram/webhook during a daily quiet window (independent of night_bonus scoring)
 quiet_hours:
   enabled: false
@@ -101,13 +107,16 @@ alert_coalesce:
 lock_intrusion:
   enabled: true
   cooldown_seconds: 0
-  pointer_move_throttle_seconds: 0.12
+  pointer_move_throttle_seconds: 0.25
   media_cooldown_seconds: 2.5
   watch_auth_failures: true
-  auth_poll_interval_seconds: 0.35
+  auth_poll_interval_seconds: 1.0
   auth_failure_min_interval_seconds: 0.4
   notify_on_unlock: true
-  unlock_poll_interval_seconds: 0.35
+  unlock_poll_interval_seconds: 1.0
+  # evdev select() timeout (s); lock-state cache TTL reduces DBus/loginctl churn during mouse moves.
+  # input_select_timeout_seconds: 0.35
+  # lock_state_cache_ttl_seconds: 0.45
   camera_device: /dev/video0
   prefer_ffmpeg: true
   # Screen: grim (Wayland) or ffmpeg x11grab / ImageMagick import (X11). Webcam: ffmpeg or OpenCV.

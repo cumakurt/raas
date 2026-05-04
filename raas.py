@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -35,6 +36,32 @@ from watcher.log_watcher import follow_file_lines
 logger = logging.getLogger(__name__)
 
 __version__ = "0.1.0"
+
+_process_nice_applied = False
+
+
+def _sync_lock_cache_ttl(settings: Settings) -> None:
+    from lock_monitor.session_lock import set_lock_cache_ttl
+
+    set_lock_cache_ttl(settings.lock_intrusion.lock_state_cache_ttl_seconds)
+
+
+def _apply_process_nice_once(settings: Settings) -> None:
+    """Raise nice at most once per process — avoids stacking increments on SIGHUP reload."""
+    global _process_nice_applied
+    if _process_nice_applied:
+        return
+    _process_nice_applied = True
+    n = int(settings.resource.process_nice)
+    ifn = max(0, min(19, n))
+    if ifn <= 0:
+        return
+    try:
+        os.nice(ifn)
+        logger.info("Lowered CPU scheduling priority (nice +%s) for background operation", ifn)
+    except OSError as e:
+        logger.warning("Could not adjust nice (+%s): %s", ifn, e)
+
 
 _DEVELOPER_EPILOG = """Developer: Cuma Kurt
   Email:    cumakurt@gmail.com
@@ -139,6 +166,8 @@ def main() -> int:
     health_state = HealthState()
 
     settings = load_settings(config_path)
+    _sync_lock_cache_ttl(settings)
+    _apply_process_nice_once(settings)
     ignore_rules = list(settings.risk.ignore_networks)
     suppressor = BurstSuppressor(
         settings.alert_coalesce.window_seconds,
@@ -269,6 +298,7 @@ def main() -> int:
     def reload_runtime(*, initial: bool = False) -> None:
         nonlocal settings, ignore_rules, engine, suppressor, alert_notifiers
         settings = load_settings(config_path)
+        _sync_lock_cache_ttl(settings)
         ignore_rules = list(settings.risk.ignore_networks)
         engine = RiskEngine(
             settings.risk.night_start,

@@ -153,11 +153,15 @@ def run_input_watch(
     last_global_fire = 0.0
     last_rel_fire = 0.0
     desktop_uid = _desktop_uid_for_capture(settings)
+    select_timeout = max(
+        0.05,
+        min(2.0, float(settings.lock_intrusion.input_select_timeout_seconds)),
+    )
 
     try:
         while not stop_event.is_set():
             try:
-                r, _, _ = select.select(fds, [], [], 0.1)
+                r, _, _ = select.select(fds, [], [], select_timeout)
             except (OSError, ValueError):
                 alive = []
                 alive_fds = []
@@ -196,7 +200,9 @@ def run_input_watch(
                         input_kind = _classify_input(ev, ecodes)
                         now = time.monotonic()
 
-                        invalidate_lock_cache()
+                        # Mouse moves flood EV_REL; skip cache bust so DBus/loginctl runs less often.
+                        if input_kind != "mouse":
+                            invalidate_lock_cache()
                         if not is_session_locked(use_cache=True):
                             t0 = time.monotonic()
                             if t0 - last_lock_deny_log >= 30.0:

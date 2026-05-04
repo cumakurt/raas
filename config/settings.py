@@ -24,11 +24,21 @@ class JournalConfig:
 
 
 @dataclass
+class ResourceConfig:
+    """
+    Reduce CPU contention with other workloads. process_nice is applied once at startup (not on SIGHUP).
+    A hard CPU percentage cap requires cgroups/systemd (e.g. CPUQuota=) — see config comments.
+    """
+
+    process_nice: int = 10
+
+
+@dataclass
 class LogConfig:
     path: Path
     backend: str = "file"
     tail_from_end: bool = True
-    poll_interval_seconds: float = 0.2
+    poll_interval_seconds: float = 0.8
     journal: JournalConfig = field(default_factory=JournalConfig)
 
 
@@ -87,16 +97,16 @@ class LockIntrusionConfig:
     # Minimum seconds between any two input-based notifications (0 = as fast as possible).
     cooldown_seconds: float = 0.0
     # Mouse movement (EV_REL) fires very often; throttle move alerts (0 = every move batch).
-    pointer_move_throttle_seconds: float = 0.12
+    pointer_move_throttle_seconds: float = 0.25
     # Minimum seconds between screen/webcam captures (text alerts are not limited by this).
     media_cooldown_seconds: float = 2.5
     # Poll auth.log for failed greeter / lock-screen PAM failures while locked.
     watch_auth_failures: bool = True
-    auth_poll_interval_seconds: float = 0.35
+    auth_poll_interval_seconds: float = 1.0
     auth_failure_min_interval_seconds: float = 0.4
     # Notify when lock state goes from locked -> unlocked (successful unlock).
     notify_on_unlock: bool = True
-    unlock_poll_interval_seconds: float = 0.35
+    unlock_poll_interval_seconds: float = 1.0
     camera_device: str = "/dev/video0"
     prefer_ffmpeg: bool = True
     capture_width: int | None = None
@@ -104,6 +114,10 @@ class LockIntrusionConfig:
     capture_screen: bool = True
     capture_webcam: bool = True
     desktop_uid: int | None = None
+    # select() timeout for evdev (seconds); higher = lower idle wakeups / CPU.
+    input_select_timeout_seconds: float = 0.35
+    # Max age for lock-state cache during input watch (DBus/loginctl is expensive).
+    lock_state_cache_ttl_seconds: float = 0.45
 
 
 @dataclass
@@ -144,6 +158,7 @@ class Settings:
     quiet_hours: QuietHoursConfig = field(default_factory=QuietHoursConfig)
     alert_coalesce: AlertCoalesceConfig = field(default_factory=AlertCoalesceConfig)
     prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
+    resource: ResourceConfig = field(default_factory=ResourceConfig)
 
 
 def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -329,7 +344,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     )
 
     tail_from_end = bool(log_block.get("tail_from_end", True))
-    poll_interval_seconds = max(0.05, float(log_block.get("poll_interval_seconds", 0.2)))
+    poll_interval_seconds = max(0.05, float(log_block.get("poll_interval_seconds", 0.8)))
 
     tg_block = cfg.get("telegram") if isinstance(cfg.get("telegram"), dict) else {}
     telegram = TelegramConfig(
@@ -389,13 +404,13 @@ def load_settings(config_path: Path | None = None) -> Settings:
     lock_intrusion = LockIntrusionConfig(
         enabled=bool(li.get("enabled", True)),
         cooldown_seconds=float(li.get("cooldown_seconds", 0.0)),
-        pointer_move_throttle_seconds=float(li.get("pointer_move_throttle_seconds", 0.12)),
+        pointer_move_throttle_seconds=float(li.get("pointer_move_throttle_seconds", 0.25)),
         media_cooldown_seconds=float(li.get("media_cooldown_seconds", 2.5)),
         watch_auth_failures=bool(li.get("watch_auth_failures", True)),
-        auth_poll_interval_seconds=float(li.get("auth_poll_interval_seconds", 0.35)),
+        auth_poll_interval_seconds=float(li.get("auth_poll_interval_seconds", 1.0)),
         auth_failure_min_interval_seconds=float(li.get("auth_failure_min_interval_seconds", 0.4)),
         notify_on_unlock=bool(li.get("notify_on_unlock", True)),
-        unlock_poll_interval_seconds=float(li.get("unlock_poll_interval_seconds", 0.35)),
+        unlock_poll_interval_seconds=float(li.get("unlock_poll_interval_seconds", 1.0)),
         camera_device=str(li.get("camera_device", "/dev/video0")),
         prefer_ffmpeg=bool(li.get("prefer_ffmpeg", True)),
         capture_width=int(li["capture_width"]) if li.get("capture_width") is not None else None,
@@ -403,6 +418,14 @@ def load_settings(config_path: Path | None = None) -> Settings:
         capture_screen=bool(li.get("capture_screen", True)),
         capture_webcam=bool(li.get("capture_webcam", True)),
         desktop_uid=int(li["desktop_uid"]) if li.get("desktop_uid") is not None else None,
+        input_select_timeout_seconds=max(
+            0.05,
+            min(2.0, float(li.get("input_select_timeout_seconds", 0.35))),
+        ),
+        lock_state_cache_ttl_seconds=max(
+            0.05,
+            min(3.0, float(li.get("lock_state_cache_ttl_seconds", 0.45))),
+        ),
     )
 
     hb = cfg.get("health") if isinstance(cfg.get("health"), dict) else {}
@@ -437,6 +460,10 @@ def load_settings(config_path: Path | None = None) -> Settings:
     prom = cfg.get("prometheus") if isinstance(cfg.get("prometheus"), dict) else {}
     prometheus = PrometheusConfig(enabled=bool(prom.get("enabled", False)))
 
+    res_block = cfg.get("resource") if isinstance(cfg.get("resource"), dict) else {}
+    _pn = int(res_block.get("process_nice", 10))
+    resource = ResourceConfig(process_nice=max(0, min(19, _pn)))
+
     return Settings(
         log=LogConfig(
             path=log_path,
@@ -454,4 +481,5 @@ def load_settings(config_path: Path | None = None) -> Settings:
         quiet_hours=quiet_hours,
         alert_coalesce=alert_coalesce,
         prometheus=prometheus,
+        resource=resource,
     )

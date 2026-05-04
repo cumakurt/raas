@@ -56,7 +56,7 @@ def follow_journal_lines(
         while True:
             if stop_event is not None and stop_event.is_set():
                 break
-            timeout = 0.5 if stop_event is not None else None
+            timeout = 0.65 if stop_event is not None else None
             if timeout is not None:
                 r, _, _ = select.select([fd], [], [], timeout)
                 if stop_event is not None and stop_event.is_set():
