@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from engine.mitre import mitre_for_kind
 from parser.events import AccessEvent, EventKind
 
 
@@ -11,6 +12,16 @@ from parser.events import AccessEvent, EventKind
 class RiskResult:
     score: int
     reasons: list[str]
+    severity: str = "low"
+    mitre_techniques: list[str] = field(default_factory=list)
+
+
+def _severity_label(score: int) -> str:
+    if score >= 70:
+        return "high"
+    if score >= 40:
+        return "medium"
+    return "low"
 
 
 class RiskEngine:
@@ -93,16 +104,24 @@ class RiskEngine:
             elif event.auth_method == "password":
                 score += 10
                 reasons.append("Password-based SSH (weaker than key-based)")
-            elif event.auth_method and event.auth_method != "password":
-                score += 10
+            elif event.auth_method and event.auth_method not in ("password", "publickey"):
+                score += 5
                 reasons.append(f"SSH login via {event.auth_method}")
         elif k == EventKind.SUDO:
-            score = self._ov(EventKind.SUDO.value, 35)
-            reasons.append("sudo command executed")
-            tgt = (event.extra or {}).get("target_user", "")
-            if str(tgt).lower() == "root":
-                score += 15
-                reasons.append("sudo to root user")
+            extra = event.extra or {}
+            if extra.get("result") == "auth_failure":
+                score = self._ov("sudo_auth_failure", 42)
+                reasons.append("sudo authentication failure")
+            elif extra.get("audit") and str(extra.get("result", "")).lower() == "failed":
+                score = self._ov("sudo_audit_failed", 44)
+                reasons.append("sudo denied or failed (audit)")
+            else:
+                score = self._ov(EventKind.SUDO.value, 35)
+                reasons.append("sudo command executed")
+                tgt = extra.get("target_user", "")
+                if str(tgt).lower() == "root":
+                    score += 15
+                    reasons.append("sudo to root user")
         elif k == EventKind.SU:
             score = self._ov(EventKind.SU.value, 40)
             reasons.append("su user switch")
@@ -124,6 +143,39 @@ class RiskEngine:
         elif k == EventKind.COCKPIT_SESSION:
             score = self._ov(EventKind.COCKPIT_SESSION.value, 28)
             reasons.append("Cockpit web console session opened")
+        elif k == EventKind.AUD_LOGIN_FAIL:
+            score = self._ov(EventKind.AUD_LOGIN_FAIL.value, 48)
+            reasons.append("Auditd login/authentication failure")
+        elif k == EventKind.AUD_AVC_DENIED:
+            score = self._ov(EventKind.AUD_AVC_DENIED.value, 42)
+            reasons.append("SELinux/AppArmor AVC denied")
+        elif k == EventKind.AUD_USER_ACCT:
+            score = self._ov(EventKind.AUD_USER_ACCT.value, 55)
+            reasons.append("User/group account change (audit)")
+        elif k == EventKind.UFW_BLOCK:
+            score = self._ov(EventKind.UFW_BLOCK.value, 35)
+            reasons.append("UFW blocked packet")
+        elif k == EventKind.NFT_DROP:
+            score = self._ov(EventKind.NFT_DROP.value, 34)
+            reasons.append("nftables DROP logged")
+        elif k == EventKind.FAIL2BAN_BAN:
+            score = self._ov(EventKind.FAIL2BAN_BAN.value, 60)
+            reasons.append("fail2ban ban")
+        elif k == EventKind.FAIL2BAN_UNBAN:
+            score = self._ov(EventKind.FAIL2BAN_UNBAN.value, 12)
+            reasons.append("fail2ban unban")
+        elif k == EventKind.POLKIT_AUTH_FAIL:
+            score = self._ov(EventKind.POLKIT_AUTH_FAIL.value, 38)
+            reasons.append("polkit authorization failure")
+        elif k == EventKind.VPN_AUTH_FAIL:
+            score = self._ov(EventKind.VPN_AUTH_FAIL.value, 44)
+            reasons.append("VPN authentication failure")
+        elif k == EventKind.DB_AUTH_FAIL:
+            score = self._ov(EventKind.DB_AUTH_FAIL.value, 46)
+            reasons.append("Database authentication failure")
+        elif k == EventKind.CONTAINER_AUTH:
+            score = self._ov(EventKind.CONTAINER_AUTH.value, 40)
+            reasons.append("Container registry/runtime auth denial")
         else:
             score = self._ov(EventKind.UNKNOWN.value, 10)
             reasons.append("Access-related event")
@@ -132,4 +184,13 @@ class RiskEngine:
             score = min(100, score + self.night_bonus)
             reasons.append(f"Event during night hours ({self._night_tz_name})")
 
-        return RiskResult(score=min(100, max(0, score)), reasons=reasons)
+        final = min(100, max(0, score))
+        mitre = mitre_for_kind(k)
+        if k == EventKind.SUDO and (event.extra or {}).get("result") == "auth_failure":
+            mitre = ["T1110"]
+        return RiskResult(
+            score=final,
+            reasons=reasons,
+            severity=_severity_label(final),
+            mitre_techniques=mitre,
+        )

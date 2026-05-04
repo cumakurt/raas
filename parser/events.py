@@ -26,6 +26,18 @@ class EventKind(str, Enum):
     TELNET_AUTH_FAILED = "telnet_auth_failed"
     MAIL_AUTH_FAILED = "mail_auth_failed"
     COCKPIT_SESSION = "cockpit_session"
+    # Host security extras (auth.log, secure, journal, audit, firewall agents)
+    AUD_LOGIN_FAIL = "audit_user_login_failure"
+    AUD_AVC_DENIED = "audit_avc_denied"
+    AUD_USER_ACCT = "audit_user_account_change"
+    UFW_BLOCK = "ufw_block"
+    NFT_DROP = "nftables_drop"
+    FAIL2BAN_BAN = "fail2ban_ban"
+    FAIL2BAN_UNBAN = "fail2ban_unban"
+    POLKIT_AUTH_FAIL = "polkit_auth_failure"
+    VPN_AUTH_FAIL = "vpn_auth_failure"
+    DB_AUTH_FAIL = "database_auth_failure"
+    CONTAINER_AUTH = "container_runtime_auth"
     UNKNOWN = "unknown"
 
 

@@ -26,6 +26,12 @@ telegram:
   bot_token: "REPLACE_WITH_BOT_TOKEN"
   chat_id: "REPLACE_WITH_CHAT_ID"
   timeout_seconds: 15
+  # parse_mode: HTML | NONE — HTML is default (escaped). Lock-intrusion captions stay plain.
+  # rate_limit_per_minute: 30
+  # retry_enabled: false
+  # retry_queue_path: /var/lib/raas/telegram_retry.jsonl
+  # Optional second chat for high-severity only (same bot token):
+  # high_severity_chat_id: ""
 
 # Optional second channel: HTTP POST JSON (schema raas.alert.v1) for SIEM / custom receiver.
 # Runs in parallel with Telegram when both are enabled.
@@ -54,6 +60,9 @@ risk:
   # ignore_source_ips:
   #   - "10.0.0.0/8"
   #   - "192.168.1.1"
+  # Local/auth usernames to ignore (lowercase match on event.user)
+  # ignore_users:
+  #   - "backup"
 
 # JSON Lines file: each line is one alarm that crossed risk.notify_threshold (auth log),
 # or a lock-intrusion capture. Includes whether Telegram delivery succeeded.
@@ -66,6 +75,23 @@ health:
   enabled: false
   bind: "127.0.0.1"
   port: 8765
+
+# GET /metrics on the same bind:port when health.enabled (Prometheus text exposition)
+prometheus:
+  enabled: false
+
+# Suppress Telegram/webhook during a daily quiet window (independent of night_bonus scoring)
+quiet_hours:
+  enabled: false
+  # start_hour: 23
+  # end_hour: 7
+  # timezone: UTC
+  # suppress_alerts: true
+
+# Merge noisy repeats: first alert fires immediately; duplicates (same kind+user+ip) within window are summarized
+alert_coalesce:
+  enabled: false
+  # window_seconds: 2.0
 
 # Lock intrusion: evdev + readable /dev/input; OS tools in DEPENDENCIES*.md for screen/webcam.
 # Text alerts can be frequent; screen/webcam are throttled (media_cooldown_seconds) to reduce Telegram rate limits.

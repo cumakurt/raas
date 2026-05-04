@@ -6,6 +6,7 @@ import os
 import pwd
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -18,6 +19,7 @@ _runuser_gdbus_fail_logged = False
 _runuser_missing_logged = False
 
 _CACHE: tuple[bool | None, float] = (None, 0.0)
+_CACHE_LOCK = threading.Lock()
 _CACHE_TTL_SEC = 0.15
 
 # Session screensaver / lock — GetActive == True means lock screen or saver is active.
@@ -349,17 +351,20 @@ def is_session_locked(*, use_cache: bool = True) -> bool:
     """
     global _CACHE
     now = time.monotonic()
-    if use_cache and _CACHE[0] is not None and (now - _CACHE[1]) < _CACHE_TTL_SEC:
-        return _CACHE[0]
+    with _CACHE_LOCK:
+        if use_cache and _CACHE[0] is not None and (now - _CACHE[1]) < _CACHE_TTL_SEC:
+            return _CACHE[0]
 
     locked = _session_locked_combined()
-    _CACHE = (locked, now)
+    with _CACHE_LOCK:
+        _CACHE = (locked, now)
     return locked
 
 
 def invalidate_lock_cache() -> None:
     global _CACHE
-    _CACHE = (None, 0.0)
+    with _CACHE_LOCK:
+        _CACHE = (None, 0.0)
 
 
 def _locked_hint_loginctl() -> bool:

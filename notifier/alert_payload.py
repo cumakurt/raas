@@ -12,6 +12,8 @@ def alert_to_dict(event: AccessEvent, risk: RiskResult, *, raw_line_max: int = 2
         "schema": "raas.alert.v1",
         "kind": event.kind.value,
         "risk_score": risk.score,
+        "severity": risk.severity,
+        "mitre_techniques": list(risk.mitre_techniques),
         "reasons": risk.reasons,
         "user": event.user,
         "source_ip": event.source_ip,

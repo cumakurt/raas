@@ -54,6 +54,8 @@ class AlarmFileLogger:
                 "channel": "auth_log",
                 "kind": event.kind.value,
                 "risk_score": risk.score,
+                "severity": risk.severity,
+                "mitre_techniques": list(risk.mitre_techniques),
                 "notify_threshold": notify_threshold,
                 "user": event.user,
                 "source_ip": event.source_ip,

@@ -4,12 +4,14 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+import re as _re
 from urllib.parse import urlparse, urlunparse
 
 import yaml
 
 from utils.ip_allowlist import load_ignore_rules_from_config
 from utils.linux_paths import parse_log_path_config
+from utils.quiet_hours import QuietHoursConfig
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,11 @@ class TelegramConfig:
     bot_token: str = ""
     chat_id: str = ""
     timeout_seconds: float = 15.0
+    parse_mode: str = "HTML"
+    rate_limit_per_minute: int = 0
+    retry_enabled: bool = False
+    retry_queue_path: Path = field(default_factory=lambda: Path("/var/lib/raas/telegram_retry.jsonl"))
+    high_severity_chat_id: str = ""
 
 
 @dataclass
@@ -61,6 +68,7 @@ class RiskConfig:
     night_bonus: int = 10
     scores: dict[str, int] = field(default_factory=dict)
     ignore_networks: tuple[Any, ...] = ()  # ipaddress networks; filled by load_settings
+    ignore_users: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass
@@ -108,6 +116,21 @@ class HealthConfig:
 
 
 @dataclass
+class AlertCoalesceConfig:
+    """Suppress duplicate (kind,user,ip) alerts within a short window; emit a summary when window rolls."""
+
+    enabled: bool = False
+    window_seconds: float = 2.0
+
+
+@dataclass
+class PrometheusConfig:
+    """Prometheus text metrics on GET /metrics (same HTTP server as health when health.enabled)."""
+
+    enabled: bool = False
+
+
+@dataclass
 class Settings:
     """Loaded entirely from the YAML config file (see config.yaml.example)."""
 
@@ -118,6 +141,9 @@ class Settings:
     alarm_log: AlarmLogConfig = field(default_factory=AlarmLogConfig)
     lock_intrusion: LockIntrusionConfig = field(default_factory=LockIntrusionConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
+    quiet_hours: QuietHoursConfig = field(default_factory=QuietHoursConfig)
+    alert_coalesce: AlertCoalesceConfig = field(default_factory=AlertCoalesceConfig)
+    prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
 
 
 def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -143,7 +169,7 @@ def _normalize_telegram_api_base(url: str) -> str:
         u = "https://" + u
     parsed = urlparse(u)
     path = (parsed.path or "").rstrip("/")
-    if path == "/bot" or path.startswith("/bot"):
+    if _re.match(r"/bot(\d|/|$)", path):
         fixed = urlunparse((parsed.scheme or "https", parsed.netloc, "", "", "", "")).rstrip("/")
         logger.warning(
             "telegram.api_base_url must not contain /bot (use https://api.telegram.org only; "
@@ -179,6 +205,24 @@ def _parse_threshold_by_kind(risk_cfg: dict[str, Any]) -> dict[str, int]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _parse_ignore_users(raw: Any) -> frozenset[str]:
+    if raw is None:
+        return frozenset()
+    if isinstance(raw, list):
+        return frozenset(str(x).strip().lower() for x in raw if str(x).strip())
+    s = str(raw).strip().lower()
+    return frozenset({s}) if s else frozenset()
+
+
+def _parse_telegram_parse_mode(raw: Any) -> str:
+    s = str(raw or "HTML").strip().upper()
+    if s in ("NONE", "OFF", "", "FALSE", "PLAIN"):
+        return ""
+    if s in ("HTML", "MARKDOWN", "MARKDOWNV2"):
+        return s
+    return "HTML"
 
 
 def load_settings(config_path: Path | None = None) -> Settings:
@@ -233,6 +277,11 @@ def load_settings(config_path: Path | None = None) -> Settings:
         bot_token=str(tg_block.get("bot_token", "") or ""),
         chat_id=str(tg_block.get("chat_id", "") or ""),
         timeout_seconds=float(tg_block.get("timeout_seconds", 15.0)),
+        parse_mode=_parse_telegram_parse_mode(tg_block.get("parse_mode", "HTML")),
+        rate_limit_per_minute=int(tg_block.get("rate_limit_per_minute", 0)),
+        retry_enabled=bool(tg_block.get("retry_enabled", False)),
+        retry_queue_path=Path(str(tg_block.get("retry_queue_path", "/var/lib/raas/telegram_retry.jsonl"))).expanduser(),
+        high_severity_chat_id=str(tg_block.get("high_severity_chat_id", "") or ""),
     )
 
     wh_block = cfg.get("webhook") if isinstance(cfg.get("webhook"), dict) else {}
@@ -254,6 +303,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
     notify_threshold_by_kind = _parse_threshold_by_kind(risk_cfg)
     ignore_ips_raw = risk_cfg.get("ignore_source_ips")
     ignore_networks = tuple(load_ignore_rules_from_config(ignore_ips_raw))
+    ignore_users = _parse_ignore_users(risk_cfg.get("ignore_users"))
 
     risk = RiskConfig(
         notify_threshold=notify_threshold,
@@ -264,6 +314,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         night_bonus=night_bonus,
         scores=scores,
         ignore_networks=ignore_networks,
+        ignore_users=ignore_users,
     )
 
     al = cfg.get("alarm_log") if isinstance(cfg.get("alarm_log"), dict) else {}
@@ -299,6 +350,24 @@ def load_settings(config_path: Path | None = None) -> Settings:
         port=int(hb.get("port", 8765)),
     )
 
+    qh = cfg.get("quiet_hours") if isinstance(cfg.get("quiet_hours"), dict) else {}
+    quiet_hours = QuietHoursConfig(
+        enabled=bool(qh.get("enabled", False)),
+        start_hour=int(qh.get("start_hour", qh.get("start", 23))),
+        end_hour=int(qh.get("end_hour", qh.get("end", 7))),
+        timezone=str(qh.get("timezone", "UTC") or "UTC").strip() or "UTC",
+        suppress_alerts=bool(qh.get("suppress_alerts", True)),
+    )
+
+    ac = cfg.get("alert_coalesce") if isinstance(cfg.get("alert_coalesce"), dict) else {}
+    alert_coalesce = AlertCoalesceConfig(
+        enabled=bool(ac.get("enabled", False)),
+        window_seconds=float(ac.get("window_seconds", 2.0)),
+    )
+
+    prom = cfg.get("prometheus") if isinstance(cfg.get("prometheus"), dict) else {}
+    prometheus = PrometheusConfig(enabled=bool(prom.get("enabled", False)))
+
     return Settings(
         log=LogConfig(
             path=log_path,
@@ -313,4 +382,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         alarm_log=alarm_log,
         lock_intrusion=lock_intrusion,
         health=health,
+        quiet_hours=quiet_hours,
+        alert_coalesce=alert_coalesce,
+        prometheus=prometheus,
     )

@@ -156,7 +156,29 @@ def run_input_watch(
 
     try:
         while not stop_event.is_set():
-            r, _, _ = select.select(fds, [], [], 0.1)
+            try:
+                r, _, _ = select.select(fds, [], [], 0.1)
+            except (OSError, ValueError):
+                alive = []
+                alive_fds = []
+                for d in devices:
+                    try:
+                        os.fstat(d.fd)
+                        alive.append(d)
+                        alive_fds.append(d.fd)
+                    except OSError:
+                        logger.warning("Input device removed: %s", getattr(d, "name", d.fd))
+                        try:
+                            d.close()
+                        except OSError:
+                            pass
+                devices = alive
+                fds = alive_fds
+                if not devices:
+                    logger.error("All input devices lost — stopping input watch")
+                    return
+                continue
+
             if stop_event.is_set():
                 break
             if not r:
@@ -207,6 +229,9 @@ def run_input_watch(
                             media_throttle=mt,
                         )
                 except BlockingIOError:
+                    continue
+                except OSError:
+                    logger.warning("Input device read error: %s", getattr(dev, "name", dev.fd))
                     continue
     finally:
         for d in devices:

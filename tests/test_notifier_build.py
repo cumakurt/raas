@@ -13,11 +13,13 @@ from engine.risk_engine import RiskResult
 
 def test_alert_to_dict_schema() -> None:
     ev = AccessEvent(kind=EventKind.SSH_FAILED, raw_line="x", user="u", source_ip="1.1.1.1")
-    risk = RiskResult(score=40, reasons=["test"])
+    risk = RiskResult(score=40, reasons=["test"], severity="medium", mitre_techniques=["T1110"])
     d = alert_to_dict(ev, risk)
     assert d["schema"] == "raas.alert.v1"
     assert d["kind"] == "ssh_failed"
     assert d["risk_score"] == 40
+    assert d["severity"] == "medium"
+    assert d["mitre_techniques"] == ["T1110"]
 
 
 def test_build_notifiers_telegram_and_webhook() -> None:
