@@ -2,6 +2,8 @@
 #
 # RAAS full installer: detects OS & dependencies, asks for confirmation, then installs
 # to /opt/raas (including /opt/raas/config/config.yaml), venv + pip, systemd unit (root), starts service.
+# If config.yaml already exists (reinstall/upgrade), it is never overwritten; the shipped example is
+# written as config.yaml.new in the same directory so you can diff and merge new options manually.
 #
 # Optional OS packages (grim, ffmpeg, dbus tools for lock/screen): see DEPENDENCIES.md
 #
@@ -248,12 +250,16 @@ echo "----------------------------------------------------------------"
 echo ""
 echo "[1/5] Copying application files..."
 mkdir -p "${INSTALL_ROOT}"
+# Never let rsync --delete remove the live config: it is not in the repo tree, so without
+# protect it would be deleted and step [3/5] would mistakenly create a fresh config from example.
 rsync -a --delete \
   --exclude='.git' \
   --exclude='.venv' \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   --exclude='.cursor' \
+  --exclude='config/config.yaml' \
+  --filter='P config/config.yaml' \
   "${REPO_ROOT}/" "${INSTALL_ROOT}/"
 
 echo "[2/5] Python virtualenv and Python dependencies..."
@@ -264,10 +270,16 @@ python3 -m venv --clear "${INSTALL_ROOT}/.venv"
 echo "[3/5] Configuration..."
 mkdir -p "${CFG_DIR}"
 CFG_CREATED=0
+CFG_NEW_WRITTEN=0
 if [[ ! -f "${CFG_DIR}/config.yaml" ]]; then
   cp "${INSTALL_ROOT}/config/config.yaml.example" "${CFG_DIR}/config.yaml"
   chmod 600 "${CFG_DIR}/config.yaml"
   CFG_CREATED=1
+else
+  # Upgrade/reinstall: keep live config; publish current example as config.yaml.new for manual merge.
+  cp "${INSTALL_ROOT}/config/config.yaml.example" "${CFG_DIR}/config.yaml.new"
+  chmod 600 "${CFG_DIR}/config.yaml.new"
+  CFG_NEW_WRITTEN=1
 fi
 
 echo "[4/5] systemd unit..."
@@ -303,6 +315,9 @@ echo ""
 echo "  Paths"
 echo "    Application directory:  ${INSTALL_ROOT}"
 echo "    Configuration file:     ${CFG_DIR}/config.yaml"
+if [[ "${CFG_NEW_WRITTEN}" -eq 1 ]]; then
+  echo "    Shipped example (merge): ${CFG_DIR}/config.yaml.new"
+fi
 echo "    systemd unit:           ${UNIT_DST}"
 echo ""
 if [[ "${CFG_CREATED}" -eq 1 ]]; then
@@ -311,9 +326,13 @@ if [[ "${CFG_CREATED}" -eq 1 ]]; then
   echo "    Edit at least:  telegram.bot_token  and  telegram.chat_id"
   echo "    Then run:         systemctl restart raas"
   echo ""
-else
+elif [[ "${CFG_NEW_WRITTEN}" -eq 1 ]]; then
   echo "  Configuration"
-  echo "    Existing ${CFG_DIR}/config.yaml was kept unchanged."
+  echo "    Existing ${CFG_DIR}/config.yaml was NOT modified."
+  echo "    The version shipped with this release was written as:"
+  echo "      ${CFG_DIR}/config.yaml.new"
+  echo "    Compare with your live config and merge new keys/options if you need them, then remove"
+  echo "    or rename config.yaml.new. Restart the service only after editing config.yaml."
   echo ""
 fi
 echo "  Service"

@@ -32,7 +32,13 @@ class WebhookNotifier:
         payload = alert_to_dict(event, risk)
         hdrs: dict[str, str] = {"Content-Type": "application/json; charset=utf-8", **self.headers}
         try:
-            r = requests.post(self.url, json=payload, headers=hdrs, timeout=self.timeout_seconds)
+            r = requests.post(
+                self.url,
+                json=payload,
+                headers=hdrs,
+                timeout=self.timeout_seconds,
+                allow_redirects=False,
+            )
             if r.status_code < 200 or r.status_code >= 300:
                 logger.error("Webhook POST error: %s %s", r.status_code, (r.text or "")[:500])
                 return False

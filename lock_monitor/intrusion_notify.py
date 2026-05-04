@@ -16,6 +16,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Plain-text Telegram bodies (no HTML); short English labels for operators.
+_INPUT_KIND_LABELS: dict[str, str] = {
+    "keyboard": "Keyboard key press",
+    "mouse": "Mouse movement",
+    "mouse_button": "Mouse button",
+    "touchpad_or_touchscreen": "Touchpad / touchscreen",
+    "input": "Generic input event",
+    "lock_auth_failure": "Failed unlock / greeter auth (from auth log)",
+    "session_unlocked": "Session unlocked (lock released)",
+}
+
 
 class LockMediaThrottle:
     """Throttle screen/webcam captures to avoid Telegram rate limits; text can still be frequent."""
@@ -67,26 +78,33 @@ def send_lock_intrusion_alert(
             height=settings.lock_intrusion.capture_height,
         )
 
+    activity = _INPUT_KIND_LABELS.get(input_kind, input_kind.replace("_", " ").title())
     lines = [
-        "RAAS lock alert",
-        f"Input: {input_kind}",
+        "🔒 RAAS — Screen lock alert",
+        "Real-time monitor: event while the graphical session is LOCKED.",
+        "",
+        f"⚡ Activity: {activity}",
+        "",
     ]
     if extra_text:
         lines.append(extra_text)
     else:
-        lines.append("Screen locked — input activity detected.")
+        lines.append(
+            "Physical or virtual input was detected while the lock screen should be active. "
+            "Review recent auth events and who should legitimately be at the console.",
+        )
     if log_excerpt.strip():
         lines.append("")
-        lines.append("Auth log (excerpt):")
+        lines.append("📄 Auth log (excerpt):")
         lines.append(log_excerpt.strip()[:900])
     if auth_hint.strip():
         lines.append("")
-        lines.append("Recent auth.log hints (may include older lines):")
+        lines.append("💡 Recent auth log hints (best-effort context; may include older lines):")
         lines.append(auth_hint.strip()[:900])
     summary = "\n".join(lines)[:3900]
 
     photo_caption = (
-        f"RAAS — locked | {input_kind} | cam={settings.lock_intrusion.camera_device}"
+        f"🔒 RAAS lock · {activity} · cam {settings.lock_intrusion.camera_device}"
     )[:1024]
 
     delivered = False

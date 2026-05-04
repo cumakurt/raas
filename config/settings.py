@@ -156,29 +156,90 @@ def _merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return out
 
 
+_OFFICIAL_TELEGRAM_API = "https://api.telegram.org"
+
+
 def _normalize_telegram_api_base(url: str) -> str:
     """
     Telegram Bot API URLs must be built as {base}/bot{token}/method.
     If api_base_url mistakenly includes /bot or /bot<token> (common copy-paste),
     requests hit .../bot/botTOKEN/... and Telegram returns 404 Not Found.
+
+    Host is restricted to api.telegram.org over https (default port only) so a
+    tampered config cannot point outbound requests (and the bot token in the URL
+    path) at an arbitrary host (SSRF / token exfiltration).
     """
     u = (url or "").strip()
     if not u:
-        return "https://api.telegram.org"
+        return _OFFICIAL_TELEGRAM_API
     if "://" not in u:
         u = "https://" + u
     parsed = urlparse(u)
     path = (parsed.path or "").rstrip("/")
     if _re.match(r"/bot(\d|/|$)", path):
-        fixed = urlunparse((parsed.scheme or "https", parsed.netloc, "", "", "", "")).rstrip("/")
+        parsed = parsed._replace(path="", params="", query="", fragment="")
+        u = urlunparse(parsed).rstrip("/")
         logger.warning(
-            "telegram.api_base_url must not contain /bot (use https://api.telegram.org only; "
-            "token goes in bot_token). Normalized to %s",
-            fixed,
+            "telegram.api_base_url must not contain /bot (use %s only; token goes in bot_token). Normalized",
+            _OFFICIAL_TELEGRAM_API,
         )
-        return fixed or "https://api.telegram.org"
-    out = u.rstrip("/")
-    return out or "https://api.telegram.org"
+        parsed = urlparse(u if "://" in u else "https://" + u)
+
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    port = parsed.port
+    path = (parsed.path or "").rstrip("/")
+
+    if scheme != "https":
+        logger.warning("telegram.api_base_url must use https; using %s", _OFFICIAL_TELEGRAM_API)
+        return _OFFICIAL_TELEGRAM_API
+    if parsed.username or parsed.password:
+        logger.warning("telegram.api_base_url must not embed userinfo; using %s", _OFFICIAL_TELEGRAM_API)
+        return _OFFICIAL_TELEGRAM_API
+    if host != "api.telegram.org":
+        logger.warning(
+            "telegram.api_base_url host %r is not api.telegram.org (SSRF mitigation); using %s",
+            host or "",
+            _OFFICIAL_TELEGRAM_API,
+        )
+        return _OFFICIAL_TELEGRAM_API
+    if port is not None and port != 443:
+        logger.warning(
+            "telegram.api_base_url must use the default https port; using %s",
+            _OFFICIAL_TELEGRAM_API,
+        )
+        return _OFFICIAL_TELEGRAM_API
+    if path:
+        logger.warning(
+            "telegram.api_base_url must be an origin without a path; using %s",
+            _OFFICIAL_TELEGRAM_API,
+        )
+        return _OFFICIAL_TELEGRAM_API
+    return _OFFICIAL_TELEGRAM_API
+
+
+def _sanitize_webhook_url(url: str) -> str:
+    """
+    Outbound webhook POSTs should use TLS. http is allowed only for explicit
+    loopback targets (local dev / same-host receiver).
+    """
+    u = (url or "").strip()
+    if not u:
+        return ""
+    parsed = urlparse(u)
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower() if parsed.hostname else ""
+    if not host:
+        logger.warning("webhook.url has no host; dropping URL")
+        return ""
+    if scheme == "https":
+        return u
+    if scheme == "http" and host in ("127.0.0.1", "localhost", "::1"):
+        return u
+    logger.warning(
+        "webhook.url must use https (http is only allowed for 127.0.0.1, localhost, or ::1); dropping URL",
+    )
+    return ""
 
 
 def _parse_scores(risk_cfg: dict[str, Any]) -> dict[str, int]:
@@ -286,9 +347,10 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
     wh_block = cfg.get("webhook") if isinstance(cfg.get("webhook"), dict) else {}
     wh_headers = wh_block.get("headers")
+    wh_url = _sanitize_webhook_url(str(wh_block.get("url", "") or ""))
     webhook = WebhookConfig(
         enabled=bool(wh_block.get("enabled", False)),
-        url=str(wh_block.get("url", "") or ""),
+        url=wh_url,
         timeout_seconds=float(wh_block.get("timeout_seconds", 10.0)),
         headers={str(k): str(v) for k, v in wh_headers.items()} if isinstance(wh_headers, dict) else {},
     )
@@ -344,9 +406,16 @@ def load_settings(config_path: Path | None = None) -> Settings:
     )
 
     hb = cfg.get("health") if isinstance(cfg.get("health"), dict) else {}
+    hb_bind = str(hb.get("bind", "127.0.0.1") or "127.0.0.1").strip()
+    if hb_bind in ("0.0.0.0", "::", "[::]", "[::0]"):
+        logger.warning(
+            "health.bind is all-interfaces (%s); JSON /health and /metrics are exposed on every "
+            "address — prefer 127.0.0.1 or firewall the port",
+            hb_bind,
+        )
     health = HealthConfig(
         enabled=bool(hb.get("enabled", False)),
-        bind=str(hb.get("bind", "127.0.0.1") or "127.0.0.1"),
+        bind=hb_bind,
         port=int(hb.get("port", 8765)),
     )
 

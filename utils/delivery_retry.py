@@ -12,6 +12,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 _MAX_LINE_BYTES = 1_000_000
+_MAX_APPEND_BYTES = 512_000
 
 _queue_lock = threading.Lock()
 
@@ -20,6 +21,9 @@ def append_telegram_retry_locked(path: Path, payload: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(payload, ensure_ascii=False) + "\n"
+        if len(line.encode("utf-8")) > _MAX_APPEND_BYTES:
+            logger.warning("telegram retry payload too large; skipping queue append")
+            return
         with _queue_lock:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line)

@@ -20,6 +20,7 @@ log:
 # Telegram Bot API: token from @BotFather, chat_id = destination (user, group, or channel).
 # api_base_url must be the origin only (https://api.telegram.org) — do NOT append /bot or the token
 # (that causes 404 Not Found; RAAS builds .../bot<token>/sendMessage itself).
+# For security, only https://api.telegram.org (default port, no path) is accepted; other values are ignored.
 telegram:
   enabled: true
   api_base_url: https://api.telegram.org
@@ -34,6 +35,7 @@ telegram:
   # high_severity_chat_id: ""
 
 # Optional second channel: HTTP POST JSON (schema raas.alert.v1) for SIEM / custom receiver.
+# Use https:// URLs. http is accepted only for loopback (127.0.0.1, localhost, ::1).
 # Runs in parallel with Telegram when both are enabled.
 # webhook:
 #   enabled: false

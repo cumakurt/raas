@@ -39,6 +39,50 @@ health:
         p.unlink(missing_ok=True)
 
 
+def test_telegram_api_base_rejects_non_official_host() -> None:
+    yaml_text = """
+log:
+  path: auto
+telegram:
+  enabled: true
+  bot_token: "123:ABC"
+  chat_id: "1"
+  api_base_url: "https://metadata.internal/bot"
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_text)
+        p = Path(f.name)
+    try:
+        s = load_settings(p)
+        assert s.telegram.api_base_url == "https://api.telegram.org"
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_webhook_url_http_only_loopback() -> None:
+    for raw, expected in (
+        ("https://siem.example/hook", "https://siem.example/hook"),
+        ("http://192.168.1.1/x", ""),
+        ("http://127.0.0.1:9090/ingest", "http://127.0.0.1:9090/ingest"),
+        ("http://[::1]/hook", "http://[::1]/hook"),
+    ):
+        yaml_text = f"""
+log:
+  path: auto
+webhook:
+  enabled: true
+  url: "{raw}"
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_text)
+            path = Path(f.name)
+        try:
+            s = load_settings(path)
+            assert s.webhook.url == expected
+        finally:
+            path.unlink(missing_ok=True)
+
+
 def test_telegram_api_base_strips_double_bot_path() -> None:
     """api_base_url must be origin only; /bot in URL causes Telegram 404."""
     yaml_text = """

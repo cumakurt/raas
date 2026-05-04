@@ -3,7 +3,7 @@
 [![CI](https://github.com/cumakurt/raas/actions/workflows/ci.yml/badge.svg)](https://github.com/cumakurt/raas/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-**RAAS** (İngilizce adı: **Real-Time Access Alert System**) — dağıtımın kimlik doğrulama **dosyasını** (`auth.log` / `secure`) veya **systemd günlüğünü** (`journalctl`) izleyen, SSH/sudo/su ve diğer olayları ayrıştıran, risk skoru veren ve isteğe bağlı olarak **Telegram** üzerinden uyarı gönderen hafif bir Python aracıdır. YAML üzerinden skor ve eşikleri özelleştirebilir, güvenilen kaynak IP/CIDR’ları yok sayabilir ve izleme için küçük bir **HTTP health** JSON uç noktası açabilirsiniz.
+**RAAS** (İngilizce adı: **Real-Time Access Alert System**) — dağıtımın kimlik doğrulama **dosyasını** (`auth.log` / `secure`) veya **systemd günlüğünü** (`journalctl`) izleyen; SSH, sudo, **güvenlik duvarı, auditd, fail2ban** ve ilgili olayları birleşik ayrıştırıcıyla işleyen; **önem derecesi** ve isteğe bağlı **MITRE ATT&CK** etiketleriyle risk veren; **Telegram**’a zengin **HTML** mesajlar, isteğe bağlı **hız sınırı** ve **yeniden deneme kuyruğu** ile ve/veya **webhook** ile uyaran hafif bir Python aracıdır. YAML: olay türüne göre eşikler, **güvenilen IP/CIDR ve kullanıcı adları**, **sessiz saatler**, **uyarı birleştirme**, isteğe bağlı **HTTP health** JSON ve **Prometheus `/metrics`**, ana izleyici için **SIGHUP** ile yapılandırma yenileme.
 
 **Sistem paketleri (DBus, ekran yakalama, ffmpeg, dağıtıma göre):** [DEPENDENCIES.tr.md](DEPENDENCIES.tr.md) · [DEPENDENCIES.md](DEPENDENCIES.md) (İngilizce)
 
@@ -48,7 +48,9 @@ chmod +x install.sh
 
 Root değilseniz betik **sudo** şifresi ister ve kendini yükseltilmiş haklarla yeniden çalıştırır. İsterseniz doğrudan `sudo ./install.sh` de kullanabilirsiniz.
 
-Kurulum sonrası `/opt/raas/config/config.yaml` dosyasını düzenleyin (özellikle Telegram), ardından:
+**Kurulum betiği özetle:** OS algılar, **systemd** / `python3` / `venv` / `rsync` kontrol eder; onay sonrası (otomasyon için `./install.sh --yes`) eksik paketleri dağıtıcıya göre kurabilir; projeyi **`/opt/raas`** altına kopyalar (`INSTALL_ROOT=...` ile değiştirilebilir); sanal ortam oluşturup `requirements.txt` kurar; **yapılandırma:** `${CFG_DIR}/config.yaml` **yoksa** örnekten oluşturulur; **dosya zaten varsa** (yükseltme/yeniden kurulum) canlı dosya **değiştirilmez**, gönderilen örnek aynı dizinde **`config.yaml.new`** olarak yazılır (yeni anahtarları elle diff/merge edin; özet çıktıda hatırlatılır); **systemd** ünitesi kurulur ve özetle servis başlatılır (`./install.sh --no-start` veya `START_SERVICE=0` ile başlatmayı atlayın).
+
+Kurulum sonrası **`/opt/raas/config/config.yaml`** dosyasını düzenleyin (özellikle Telegram). Yükseltmede önce **`config.yaml.new`** ile mevcut dosyayı karşılaştırmanız önerilir. Ardından:
 
 ```bash
 sudo systemctl restart raas
@@ -78,18 +80,25 @@ sudo tail -f /var/log/raas/alarms.jsonl
 ```
 
 - **`channel`:** `auth_log` (auth/secure olayları) veya `lock_intrusion` (kilit ekranı).
-- **`notify_delivered`** / **`deliveries`:** Telegram/webhook gönderimi başarılı mı. `notify_attempted` true iken `notify_delivered` false ise `journalctl` içinde `Telegram API error` arayın (token, `chat_id`, veya **`api_base_url` içinde `/bot` olmamalı** — Telegram bölümüne bakın).
+- Auth kayıtlarında **`severity`**, **`mitre_techniques`**, **`deliveries`** (kanal başına başarı) olabilir.
+- **`notify_delivered`** / **`notify_attempted`:** `notify_attempted` true iken `notify_delivered` false ise `journalctl` içinde `Telegram API error` arayın (token, `chat_id`, veya **`api_base_url` içinde `/bot` olmamalı** — Telegram bölümüne bakın).
 - **`raw_line`:** günlükten kesit (hassas veri; dosya izinlerini sıkı tutun).
 
 İsteğe bağlı: **`jq`** yüklüyse `sudo tail -f /var/log/raas/alarms.jsonl | jq -c .`
 
 Dosya **boş** veya **güncellenmiyorsa:** henüz `risk.notify_threshold` üzerinde olay yok; veya **`log.tail_from_end: true`** iken yalnızca servis başladıktan **sonra** yazılan satırlar işlenir (test için hatalı SSH, `sudo` vb. üretin). `alarm_log.enabled` açık olsun; `/var/log/raas/` oluşturulabilsin (varsayılan servis **root** çalışır).
 
-**3. HTTP health (YAML’da açıksa)**
+**3. Hızlı sağlık kontrolü (YAML’da açıksa)**
 
-`health.enabled: true` iken `curl -s http://127.0.0.1:8765/health` ile sayaçlar ve son olay türü okunabilir.
+`health.enabled: true` iken `curl -s http://127.0.0.1:8765/health` ile satır sayıları, uyarılar, birleştirme/sessiz saat baskıları, Telegram teslim istatistikleri, yapılandırma yenileme sayısı, son olay türü vb. **JSON** döner.
 
-**4. Sık karşılaşılan durumlar**
+Aynı sunucuda **`prometheus.enabled: true`** ise `curl -s http://127.0.0.1:8765/metrics` **Prometheus** metin metrikleri verir.
+
+**4. Tam yeniden başlatmadan yapılandırma yenileme**
+
+Ana sürece **`SIGHUP`** gönderin (ör. uygun `systemctl kill -s HUP raas` veya `kill -HUP` ile doğru PID). İzleyici YAML’ı diskten yeniden okur (eşikler, yok sayma listeleri, bildirim kanalları, birleştirme/sessiz ayarları). **Kilit ihlali** iş parçacıkları tam servis yeniden başlatılana kadar eski ayarlarla kalabilir.
+
+**5. Sık karşılaşılan durumlar**
 
 | Belirti | Bakılacak yer |
 |--------|----------------|
@@ -97,6 +106,7 @@ Dosya **boş** veya **güncellenmiyorsa:** henüz `risk.notify_threshold` üzeri
 | Journal’da `Event ... risk=` yok | Yeni auth satırı yok (`tail_from_end`), `log.path` / `log.backend` yanlış, log formatı ayrıştırıcıyla uyuşmuyor |
 | Alarm dosyası hep boş | Eşik çok yüksek; `ignore_source_ips` hepsini süzüyor; `alarm_log.enabled: false` |
 | `deliveries.telegram: false`, HTTP 404 | `api_base_url` yalnızca `https://api.telegram.org` (URL’ye `/bot` eklemeyin) |
+| Çok fazla uyarı | `risk.notify_threshold` yükseltin; `notify_threshold_by_kind` kullanın; `alert_coalesce` açın; `ignore_source_ips` / `ignore_users` ekleyin |
 | Telegram 401 / 400 | `bot_token` / `chat_id` hatalı; özel sohbette `/start`; grup/kanal yetkisi |
 
 **Kaldırma:**
@@ -134,6 +144,10 @@ Servis **root** olarak çalışır; günlük, giriş cihazları ve kamera için 
 ## Telegram yapılandırması (ayrıntılı)
 
 Tüm Telegram ayarları **`config.yaml`** içindeki `telegram:` bölümündedir (kurulumda genelde `/opt/raas/config/config.yaml`).
+
+**Auth uyarıları** varsayılan olarak **HTML** kullanır (`telegram.parse_mode: HTML`): yapılandırılmış bölümler (önem derecesi, okunabilir başlık, ayrıntılar, önerilen kontroller, ham günlük satırı `<pre>` içinde). Bağlantı önizlemeleri kapalıdır. **Kilit ihlali** metinleri güvenlik için **düz** tutulur.
+
+**Önemli `telegram` anahtarları:** `enabled`, `api_base_url`, `bot_token`, `chat_id`, `timeout_seconds`, `parse_mode` (`HTML` veya düz metin), `rate_limit_per_minute` (dakikada üst sınır; `0` = sınırsız; aşımda iletiler isteğe bağlı kuyrukta tutulur), `retry_enabled`, `retry_queue_path` (varsayılan `/var/lib/raas/telegram_retry.jsonl`), `high_severity_chat_id` (aynı bot token ile isteğe bağlı ikinci hedef; yalnızca **`severity`** `high` iken).
 
 ### 1. Bot oluşturma ve `bot_token`
 
@@ -206,11 +220,17 @@ telegram:
   bot_token: "BURAYA_BOT_TOKEN"
   chat_id: "BURAYA_CHAT_ID"
   timeout_seconds: 15
+  parse_mode: HTML
+  rate_limit_per_minute: 0
+  retry_enabled: true
+  retry_queue_path: /var/lib/raas/telegram_retry.jsonl
+  # high_severity_chat_id: "-1001234567890"
 ```
 
 - **`enabled: false`** yaparsanız Telegram’a hiç istek gönderilmez (yalnızca yerel günlük / alarm dosyası).
-- **`api_base_url`:** Normal kullanımda değiştirmeyin; yalnızca uyumlu bir vekil veya özel uç nokta kullanıyorsanız güncellenir.
+- **`api_base_url`:** Normal kullanımda değiştirmeyin; URL’de **`/bot` eklemeyin** (404 hatası).
 - **`timeout_seconds`:** Bot API HTTP isteği zaman aşımı (saniye).
+- **`high_severity_chat_id`:** Boş bırakılabilir; doluysa yüksek önemli uyarılar bu hedefe de gider.
 
 ### 4. Çalışıp çalışmadığını test etme
 
@@ -235,24 +255,27 @@ Başarılı yanıtta `"ok":true` görünür. Hata mesajı varsa (401, 400) token
 ### 6. RAAS özelinde
 
 - `telegram.enabled: true` iken **`bot_token`** veya **`chat_id`** boşsa süreç çalışmaya devam eder ancak Telegram’a istek gönderilmez; günlükte uyarı görürsünüz.
-- Alarm kayıtları (`alarm_log`) her uyarı için `telegram_attempted` ve `telegram_delivered` alanlarını yazar.
+- Alarm kayıtları (`alarm_log`) **`severity`**, **`mitre_techniques`**, kanal başına **`deliveries`** ve uyumluluk için **`telegram_*`** alanlarını yazar.
 
 ---
 
 ## Ayrıştırılan olaylar
 
-SSH/OpenSSH, PAM sshd, sudo, su, FTP, telnet, posta (Dovecot/Postfix SASL), Cockpit ve yerel konsol oturumları gibi tipik `auth` / `secure` satırları desteklenir. Gürültülü trafik için `risk.notify_threshold` değerini yükseltin.
+Birleşik ayrıştırıcı (`parser/log_parser.py`) önce **SSH/OpenSSH** kurallarını (kabul edilen oturumlar, parola/genel anahtar/keyboard-interactive başarısızlıkları, geçersiz kullanıcı, çok fazla kimlik doğrulama denemesi, ön kimlik doğrulama kopmaları), ardından aynı kullanıcı/IP için yinelenen **PAM sshd** hatalarını (yakın zamandaki sshd satırıyla çiftlenmişse indirgenir), **sudo** / **su** / **root bağlamı**, **vsftpd/proftpd**, **telnetd**, **Dovecot/Postfix SASL**, **Cockpit**, **yerel konsol** oturumunu işler; aynı akışta **ek** örüntüler: **auditd** (giriş başarısızlığı, AVC denied, hesap değişikliği sezgileri), **UFW BLOCK**, **nftables** DROP, **fail2ban** ban/unban, **polkit**, **VPN** kimlik doğrulama hataları, **PostgreSQL/MySQL** kimlik doğrulama hataları, **konteyner** kayıt ipuçları, **sudo** kimlik doğrulama hataları. Biçim dağıtıma göre değişir — ayrıntı `parser/security_extras.py` içindedir. Gürültü için `risk.notify_threshold` ve **`notify_threshold_by_kind`** ile ince ayar yapın.
 
 ## Yapılandırma özeti
 
 Tüm anahtarlar ve yorumlar için **`config/config.yaml.example`** dosyasına bakın.
 
 - **`log`** — `backend`: `file` (varsayılan) veya `journal`; `path` (`auto` veya dosya yolu; dosya modu ve kilit ihlali auth ipuçları için); `tail_from_end`, `poll_interval_seconds`; `backend: journal` iken isteğe bağlı `journal.journalctl_args`.
-- **`alarm_log`** — tetiklenen alarmlar için JSON satırları (varsayılan `/var/log/raas/alarms.jsonl`); auth kayıtlarında **`deliveries`** (kanal başına başarı), **`notify_attempted`** / **`notify_delivered`**, uyumluluk için **`telegram_*`** alanları.
-- **`telegram`** — `bot_token`, `chat_id` vb.; **`chat_id` nasıl bulunur** için yukarıdaki **«Telegram yapılandırması (ayrıntılı)»** bölümündeki **2. maddeye** bakın (kişisel / grup / kanal).
-- **`webhook`** — isteğe bağlı HTTP **POST** ile JSON (`schema: raas.alert.v1`); isteğe bağlı **`headers`**; Telegram ile **paralel** çalışabilir.
-- **`risk`** — `notify_threshold` (0–100); isteğe bağlı **`notify_threshold_by_kind`** (olay türüne göre eşik); **`scores`** ile taban skor geçersiz kılma (anahtarlar ayrıştırıcı olay adlarıyla uyumlu, örn. `ssh_failed`, `ssh_accepted`, `ssh_accepted_root`); **`ignore_source_ips`** (CIDR veya tek IP — bu kaynaklardan uyarı yok); **`night_timezone`** (IANA, örn. `Europe/Istanbul`), **`night_start`** / **`night_end`**, **`night_bonus`**.
-- **`health`** — isteğe bağlı JSON **`GET /`** ve **`GET /health`** (`bind`:`port`, varsayılan `127.0.0.1:8765`, `enabled: false`). Sayaçlar ve son ayrıştırılan olay bilgisi.
+- **`alarm_log`** — tetiklenen alarmlar için JSON satırları (varsayılan `/var/log/raas/alarms.jsonl`); auth kayıtlarında **`severity`**, **`mitre_techniques`**, **`deliveries`** (kanal başına başarı), **`notify_attempted`** / **`notify_delivered`**, uyumluluk için **`telegram_*`** alanları.
+- **`telegram`** — yukarıdaki **«Telegram yapılandırması»** (`parse_mode`, hız sınırı, yeniden deneme kuyruğu, **`high_severity_chat_id`** dahil).
+- **`webhook`** — isteğe bağlı HTTP **POST** ile JSON (`schema: raas.alert.v1`, gövdede **`severity`** ve **`mitre_techniques`**); isteğe bağlı **`headers`**; Telegram ile **paralel** çalışabilir.
+- **`risk`** — `notify_threshold` (0–100); isteğe bağlı **`notify_threshold_by_kind`** (olay türüne göre eşik); **`scores`** ile taban skor geçersiz kılma (anahtarlar ayrıştırıcı olay adlarıyla uyumlu, örn. `ssh_failed`, `ssh_accepted`, `ssh_accepted_root`, `sudo_auth_failure`, …); **`ignore_source_ips`** (CIDR veya tek IP — bu uzak adreslerden uyarı yok); **`ignore_users`** (`event.user` ile küçük harf eşleşmesi — bu kullanıcı adları atlanır); **`night_timezone`** (IANA, örn. `Europe/Istanbul`), **`night_start`** / **`night_end`**, **`night_bonus`**.
+- **`quiet_hours`** — isteğe bağlı günlük pencere (`enabled`, `start_hour`/`end_hour` veya YAML `start`/`end`, `timezone`); **Telegram/webhook**’u bastırır (eşik aşılan olaylar alarm dosyasında yine de kayda geçebilir).
+- **`alert_coalesce`** — patlamaları birleştirir: aynı (tür, kullanıcı, IP) **`window_seconds`** içinde tekilleşir; pencere kapanınca özet üretir (`utils/burst_suppress.py`).
+- **`health`** — isteğe bağlı JSON **`GET /`** ve **`GET /health`** (`bind`:`port`, varsayılan `127.0.0.1:8765`, `enabled: false`). Birleştirme/sessiz baskıları, Telegram başarı/hata, yapılandırma yenilemeleri vb. genişletilmiş sayaçlar.
+- **`prometheus`** — `enabled: true` ve **`health.enabled`** iken aynı bind/port üzerinde **`GET /metrics`** **Prometheus** metin metrikleri sunar.
 - **`lock_intrusion`** — kilit ekranında giriş + kamera (varsayılan açık; `enabled: false` ile kapatılır)
 
 ### Kilit ekranı, girdi, ekran görüntüsü ve kamera
@@ -264,10 +287,10 @@ Yasal olarak uygun ve izinli ortamlarda kullanın. `lock_intrusion.enabled: true
 
 ## Mimari (genişletme)
 
-- **Hat:** günlük satırı → `parser/ssh_parser.py` → isteğe bağlı IP normalize / allowlist → `utils/event_dedup.py` → `engine/risk_engine.py` → **uyarı kanalları** → `utils/alarm_file_log.py`.
-- **Uyarı kanalları:** `notifier/base.py` içinde **`AlertNotifier`** (`channel_id`, `send_alert(event, risk)`). Hazır: **`TelegramNotifier`**, **`WebhookNotifier`**. Kayıt: **`notifier/build.py`** → `build_alert_notifiers(settings)`. Yeni kanal: protokolü uygula, `build_alert_notifiers` ve **`config/settings.py`** + YAML’a ekle.
-- **JSON gövde:** `notifier/alert_payload.py` → `alert_to_dict()` (webhook ve ileride diğer çıkışlar).
-- **Kilit ihlali** yalnızca **Telegram** üzerinden (`lock_monitor/input_watch.py`, `auth_unlock_watch.py`, `unlock_transition_watch.py`); genel kanal listesini kullanmaz.
+- **Hat:** günlük satırı → `parser/log_parser.py` (SSH/çekirdek + `parser/security_extras.py` sezgileri) → isteğe bağlı IP normalize / allowlist → `utils/event_dedup.py` → `engine/risk_engine.py` (**`RiskResult`**: önem derecesi, `engine/mitre.py` ile **MITRE** etiketleri) → **uyarı kanalları** → `utils/alarm_file_log.py`. Odaklı SSH birim testleri için `parser/ssh_parser.py` hâlâ kullanılabilir.
+- **Uyarı kanalları:** `notifier/base.py` içinde **`AlertNotifier`** (`channel_id`, `send_alert(event, risk)`). Hazır: **`TelegramNotifier`**, **`WebhookNotifier`**; **`notifier/build.py`** içinde isteğe bağlı **yüksek önem** hedef yönlendirmesi. Kayıt: `build_alert_notifiers(settings)`. Yeni kanal: protokolü uygula, `build_alert_notifiers` ve **`config/settings.py`** + YAML’a ekle.
+- **JSON gövde:** `notifier/alert_payload.py` → `alert_to_dict()` (webhook ve ilerideki çıkışlar).
+- **Kilit ihlali** yalnızca **Telegram** üzerinden (`lock_monitor/input_watch.py`, `auth_unlock_watch.py`, `unlock_transition_watch.py`, `intrusion_notify.py`); genel kanal listesini kullanmaz.
 
 ## Geliştirici
 
