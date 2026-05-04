@@ -9,6 +9,12 @@
 
 **Katkı:** [CONTRIBUTING.md](CONTRIBUTING.md) · **Güvenlik:** [SECURITY.md](SECURITY.md)
 
+## Örnek çıktı (Telegram)
+
+RAAS’ın Telegram’da gönderdiği zengin HTML uyarı mesajına ait örnek ekran görüntüsü:
+
+![RAAS Telegram güvenlik uyarısı örneği](log.png)
+
 ## Linux uyumluluğu
 
 - **Günlük yolu:** `log.backend` **`file`** iken (varsayılan) `log.path: auto` önerilir; `/var/log/auth.log` (Debian/Ubuntu/Kali) ve `/var/log/secure` (RHEL/Fedora/Alma/Rocky) sırayla denenir.
