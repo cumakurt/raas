@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 __version__ = "0.1.0"
 
 _process_nice_applied = False
+_RETRY_DRAIN_INTERVAL_SECONDS = 10.0
 
 
 def _sync_lock_cache_ttl(settings: Settings) -> None:
@@ -320,6 +321,8 @@ def main() -> int:
             health_state.record_config_reload()
             logger.info("Runtime config reloaded from disk")
 
+    last_retry_drain = 0.0
+
     try:
         while not stop_event.is_set():
             source_reopen = False
@@ -335,7 +338,13 @@ def main() -> int:
                     source_reopen = True
                     break
 
-                if settings.telegram.retry_enabled and settings.telegram.retry_queue_path:
+                now = time.monotonic()
+                if (
+                    settings.telegram.retry_enabled
+                    and settings.telegram.retry_queue_path
+                    and now - last_retry_drain >= _RETRY_DRAIN_INTERVAL_SECONDS
+                ):
+                    last_retry_drain = now
                     primary = next(
                         (n for n in alert_notifiers if getattr(n, "channel_id", "") == "telegram"),
                         None,
@@ -346,6 +355,7 @@ def main() -> int:
                             lambda o: primary.send_text_raw(
                                 str(o.get("text", "")),
                                 parse_mode=str(o.get("parse_mode", "") or ""),
+                                chat_id=str(o.get("chat_id", "") or primary.chat_id),
                             ),
                             max_per_tick=3,
                         )
@@ -379,7 +389,7 @@ def main() -> int:
                 if risk.score < notify_threshold:
                     continue
 
-                packs = suppressor.process(event, risk, notify_threshold, time.monotonic())
+                packs = suppressor.process(event, risk, notify_threshold, now)
                 if not packs:
                     health_state.record_coalesce_suppressed(1)
                     continue

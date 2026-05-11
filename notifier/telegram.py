@@ -335,23 +335,35 @@ class TelegramNotifier:
         self._rl_times.append(now)
         return False
 
-    def _send_message(self, text: str, *, parse_mode: str = "") -> bool:
+    def _queue_retry_message(self, text: str, parse_mode: str, chat_id: str) -> None:
+        if self.retry_enabled and self.retry_queue_path is not None:
+            append_telegram_retry_locked(
+                self.retry_queue_path,
+                {"text": text, "parse_mode": parse_mode, "chat_id": chat_id, "attempts": 0},
+            )
+
+    def _send_message(
+        self,
+        text: str,
+        *,
+        parse_mode: str = "",
+        queue_on_failure: bool = True,
+        chat_id: str | None = None,
+    ) -> bool:
         if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH:
             text = text[: TELEGRAM_MAX_MESSAGE_LENGTH - 20] + "\n…(truncated)"
+        target_chat_id = chat_id or self.chat_id
         if self._consume_rate_or_block():
             logger.warning("Telegram rate limit reached — queueing or dropping")
-            if self.retry_enabled and self.retry_queue_path is not None:
-                append_telegram_retry_locked(
-                    self.retry_queue_path,
-                    {"text": text, "parse_mode": parse_mode, "chat_id": self.chat_id, "attempts": 0},
-                )
+            if queue_on_failure:
+                self._queue_retry_message(text, parse_mode, target_chat_id)
             if self._on_delivery:
                 self._on_delivery(False)
             return False
 
         url = f"{self.api_base_url}/bot{self.bot_token}/sendMessage"
         payload: dict[str, Any] = {
-            "chat_id": self.chat_id,
+            "chat_id": target_chat_id,
             "text": text,
             "disable_web_page_preview": True,
         }
@@ -366,11 +378,8 @@ class TelegramNotifier:
             )
             if r.status_code != 200:
                 logger.error("Telegram API error: %s %s", r.status_code, r.text[:500])
-                if self.retry_enabled and self.retry_queue_path is not None:
-                    append_telegram_retry_locked(
-                        self.retry_queue_path,
-                        {"text": text, "parse_mode": parse_mode, "chat_id": self.chat_id, "attempts": 0},
-                    )
+                if queue_on_failure:
+                    self._queue_retry_message(text, parse_mode, target_chat_id)
                 if self._on_delivery:
                     self._on_delivery(False)
                 return False
@@ -379,11 +388,8 @@ class TelegramNotifier:
             return True
         except requests.RequestException as e:
             logger.error("Telegram request failed: %s", e)
-            if self.retry_enabled and self.retry_queue_path is not None:
-                append_telegram_retry_locked(
-                    self.retry_queue_path,
-                    {"text": text, "parse_mode": parse_mode, "chat_id": self.chat_id, "attempts": 0},
-                )
+            if queue_on_failure:
+                self._queue_retry_message(text, parse_mode, target_chat_id)
             if self._on_delivery:
                 self._on_delivery(False)
             return False
@@ -392,9 +398,20 @@ class TelegramNotifier:
         """Lock-intrusion and plain notices: no parse_mode to avoid HTML injection from captures."""
         return self._send_message(text, parse_mode="")
 
-    def send_text_raw(self, text: str, *, parse_mode: str = "") -> bool:
+    def send_text_raw(
+        self,
+        text: str,
+        *,
+        parse_mode: str = "",
+        chat_id: str | None = None,
+    ) -> bool:
         """Retry worker entrypoint: same transport as sendMessage."""
-        return self._send_message(text, parse_mode=parse_mode)
+        return self._send_message(
+            text,
+            parse_mode=parse_mode,
+            queue_on_failure=False,
+            chat_id=chat_id,
+        )
 
     def send_photo(
         self,

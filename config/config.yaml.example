@@ -114,9 +114,9 @@ lock_intrusion:
   auth_failure_min_interval_seconds: 0.4
   notify_on_unlock: true
   unlock_poll_interval_seconds: 1.0
-  # evdev select() timeout (s); lock-state cache TTL reduces DBus/loginctl churn during mouse moves.
-  # input_select_timeout_seconds: 0.35
-  # lock_state_cache_ttl_seconds: 0.45
+  # evdev select() timeout (s); lock-state cache TTL reduces DBus/loginctl churn during input bursts.
+  # input_select_timeout_seconds: 1.0
+  # lock_state_cache_ttl_seconds: 1.5
   camera_device: /dev/video0
   prefer_ffmpeg: true
   # Screen: grim (Wayland) or ffmpeg x11grab / ImageMagick import (X11). Webcam: ffmpeg or OpenCV.

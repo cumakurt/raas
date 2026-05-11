@@ -115,9 +115,9 @@ class LockIntrusionConfig:
     capture_webcam: bool = True
     desktop_uid: int | None = None
     # select() timeout for evdev (seconds); higher = lower idle wakeups / CPU.
-    input_select_timeout_seconds: float = 0.35
+    input_select_timeout_seconds: float = 1.0
     # Max age for lock-state cache during input watch (DBus/loginctl is expensive).
-    lock_state_cache_ttl_seconds: float = 0.45
+    lock_state_cache_ttl_seconds: float = 1.5
 
 
 @dataclass
@@ -420,11 +420,11 @@ def load_settings(config_path: Path | None = None) -> Settings:
         desktop_uid=int(li["desktop_uid"]) if li.get("desktop_uid") is not None else None,
         input_select_timeout_seconds=max(
             0.05,
-            min(2.0, float(li.get("input_select_timeout_seconds", 0.35))),
+            min(2.0, float(li.get("input_select_timeout_seconds", 1.0))),
         ),
         lock_state_cache_ttl_seconds=max(
             0.05,
-            min(3.0, float(li.get("lock_state_cache_ttl_seconds", 0.45))),
+            min(3.0, float(li.get("lock_state_cache_ttl_seconds", 1.5))),
         ),
     )
 

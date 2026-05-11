@@ -9,7 +9,7 @@ import time
 
 from config.settings import Settings
 from lock_monitor.intrusion_notify import LockMediaThrottle, send_lock_intrusion_alert
-from lock_monitor.session_lock import _dbus_uids_to_probe, invalidate_lock_cache, is_session_locked
+from lock_monitor.session_lock import _dbus_uids_to_probe, is_session_locked
 from notifier.telegram import TelegramNotifier
 from utils.alarm_file_log import AlarmFileLogger
 
@@ -200,9 +200,6 @@ def run_input_watch(
                         input_kind = _classify_input(ev, ecodes)
                         now = time.monotonic()
 
-                        # Mouse moves flood EV_REL; skip cache bust so DBus/loginctl runs less often.
-                        if input_kind != "mouse":
-                            invalidate_lock_cache()
                         if not is_session_locked(use_cache=True):
                             t0 = time.monotonic()
                             if t0 - last_lock_deny_log >= 30.0:

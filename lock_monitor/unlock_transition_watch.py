@@ -6,7 +6,7 @@ import threading
 
 from config.settings import Settings
 from lock_monitor.intrusion_notify import LockMediaThrottle, send_lock_intrusion_alert
-from lock_monitor.session_lock import _dbus_uids_to_probe, invalidate_lock_cache, is_session_locked
+from lock_monitor.session_lock import _dbus_uids_to_probe, is_session_locked
 from notifier.telegram import TelegramNotifier
 from utils.alarm_file_log import AlarmFileLogger
 
@@ -49,7 +49,6 @@ def run_unlock_transition_watch(
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll):
             break
-        invalidate_lock_cache()
         locked = is_session_locked(use_cache=True)
         if prev_locked is True and not locked:
             send_lock_intrusion_alert(

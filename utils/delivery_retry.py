@@ -39,7 +39,7 @@ def drain_telegram_retry_file(
     max_per_tick: int = 5,
 ) -> int:
     """
-    Try up to max_per_tick pending JSON objects; successful sends remove lines by rewriting file.
+    Try up to max_per_tick pending JSON objects; successful sends are removed.
     send_payload(obj) -> bool
     """
     with _queue_lock:
@@ -50,14 +50,14 @@ def drain_telegram_retry_file(
         except OSError as e:
             logger.debug("retry queue read: %s", e)
             return 0
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.debug("retry queue unlink: %s", e)
+            return 0
         lines = [ln for ln in raw.splitlines() if ln.strip()]
 
     if not lines:
-        with _queue_lock:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
         return 0
 
     kept: list[str] = []
@@ -99,9 +99,9 @@ def drain_telegram_retry_file(
     with _queue_lock:
         try:
             if kept:
-                path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-            else:
-                path.unlink(missing_ok=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write("\n".join(kept) + "\n")
         except OSError as e:
-            logger.error("retry queue rewrite failed: %s", e)
+            logger.error("retry queue update failed: %s", e)
     return sent

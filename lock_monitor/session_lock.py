@@ -4,11 +4,13 @@ import json
 import logging
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +22,53 @@ _runuser_missing_logged = False
 
 _CACHE: tuple[bool | None, float] = (None, 0.0)
 _CACHE_LOCK = threading.Lock()
-_CACHE_TTL_SEC = 0.45
+_CACHE_TTL_SEC = 1.5
+_SESSION_LIST_CACHE: tuple[list[dict[str, Any]] | None, float] = (None, 0.0)
+_SESSION_LIST_TTL_SEC = 10.0
+_DBUS_UIDS_CACHE: tuple[list[int] | None, float] = (None, 0.0)
+_DBUS_UIDS_TTL_SEC = 10.0
+_DBUS_METHOD_CACHE: dict[int, tuple[tuple[tuple[str, str, str], ...], float]] = {}
+_DBUS_METHOD_TTL_SEC = 60.0
 
 
 def set_lock_cache_ttl(seconds: float) -> None:
     """How long is_session_locked(use_cache=True) may reuse a verdict (config: lock_intrusion.lock_state_cache_ttl_seconds)."""
     global _CACHE_TTL_SEC
     _CACHE_TTL_SEC = max(0.05, min(3.0, float(seconds)))
+
+
+def _loginctl_sessions_json(*, use_cache: bool = True) -> list[dict[str, Any]]:
+    global _SESSION_LIST_CACHE
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        cached, cached_at = _SESSION_LIST_CACHE
+        if use_cache and cached is not None and (now - cached_at) < _SESSION_LIST_TTL_SEC:
+            return list(cached)
+
+    try:
+        r = subprocess.run(
+            ["loginctl", "list-sessions", "--json=short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except FileNotFoundError:
+        sessions: list[dict[str, Any]] = []
+    else:
+        sessions = []
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                raw = json.loads(r.stdout)
+            except json.JSONDecodeError:
+                raw = []
+            if isinstance(raw, list):
+                sessions = [s for s in raw if isinstance(s, dict)]
+
+    with _CACHE_LOCK:
+        _SESSION_LIST_CACHE = (sessions, time.monotonic())
+    return list(sessions)
+
 
 # Session screensaver / lock — GetActive == True means lock screen or saver is active.
 # systemd LockedHint is often "no" on GNOME/MATE/XFCE even when the screen is locked.
@@ -60,22 +102,7 @@ def _seat_session_uids() -> list[int]:
     Prefer sessions with a seat; also include user sessions of type x11/wayland when seat is
     missing or '-' (some setups omit seat in loginctl JSON).
     """
-    try:
-        r = subprocess.run(
-            ["loginctl", "list-sessions", "--json=short"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except FileNotFoundError:
-        return []
-    if r.returncode != 0 or not r.stdout.strip():
-        return []
-    try:
-        sessions = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return []
+    sessions = _loginctl_sessions_json()
     uids: set[int] = set()
     for s in sessions:
         raw_uid = s.get("uid")
@@ -104,14 +131,23 @@ def _dbus_uids_to_probe() -> list[int]:
     Uids whose session bus we query.
     As root: prefer users with a seat session, then any uid with /run/user/<uid>/bus.
     """
+    global _DBUS_UIDS_CACHE
     uid = os.getuid()
     if uid != 0:
         return [uid]
+
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        cached, cached_at = _DBUS_UIDS_CACHE
+        if cached is not None and (now - cached_at) < _DBUS_UIDS_TTL_SEC:
+            return list(cached)
 
     seat_uids = _seat_session_uids()
     run_user = Path("/run/user")
     if not run_user.is_dir():
         logger.warning("/run/user missing — cannot locate session DBus sockets")
+        with _CACHE_LOCK:
+            _DBUS_UIDS_CACHE = ([], time.monotonic())
         return []
 
     ordered: list[int] = []
@@ -134,6 +170,8 @@ def _dbus_uids_to_probe() -> list[int]:
             "No /run/user/<uid>/bus sockets found — DBus lock detection unavailable. "
             "Is a graphical user session running?",
         )
+    with _CACHE_LOCK:
+        _DBUS_UIDS_CACHE = (ordered, time.monotonic())
     return ordered
 
 
@@ -270,11 +308,40 @@ def _locked_hint_dbus() -> bool:
     uids = _dbus_uids_to_probe()
     if not uids:
         return False
+    now = time.monotonic()
     for uid in uids:
+        with _CACHE_LOCK:
+            cached_methods, cached_at = _DBUS_METHOD_CACHE.get(uid, ((), 0.0))
+            known_methods = cached_methods if now - cached_at < _DBUS_METHOD_TTL_SEC else ()
+            if cached_methods and not known_methods:
+                _DBUS_METHOD_CACHE.pop(uid, None)
+
+        if known_methods:
+            responsive: list[tuple[str, str, str]] = []
+            for dest, path, method in known_methods:
+                v = _gdbus_get_active(dest, path, method, for_uid=uid)
+                if v is True:
+                    return True
+                if v is False:
+                    responsive.append((dest, path, method))
+            if responsive:
+                with _CACHE_LOCK:
+                    _DBUS_METHOD_CACHE[uid] = (tuple(responsive), cached_at)
+                continue
+
+        responsive = []
         for dest, path, method in _DBUS_GET_ACTIVE:
             v = _gdbus_get_active(dest, path, method, for_uid=uid)
             if v is True:
+                responsive.append((dest, path, method))
+                with _CACHE_LOCK:
+                    _DBUS_METHOD_CACHE[uid] = (tuple(responsive), now)
                 return True
+            if v is False:
+                responsive.append((dest, path, method))
+        if responsive:
+            with _CACHE_LOCK:
+                _DBUS_METHOD_CACHE[uid] = (tuple(responsive), now)
     return False
 
 
@@ -296,19 +363,17 @@ def _locked_hint_process() -> bool:
     pgrep = shutil.which("pgrep")
     if not pgrep:
         return False
-    for name in _LOCK_SCREEN_PROCS:
-        try:
-            r = subprocess.run(
-                ["pgrep", "-x", name],
-                capture_output=True,
-                timeout=2,
-                check=False,
-            )
-            if r.returncode == 0:
-                return True
-        except OSError:
-            continue
-    return False
+    pattern = "|".join(re.escape(name) for name in _LOCK_SCREEN_PROCS)
+    try:
+        r = subprocess.run(
+            ["pgrep", "-x", pattern],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+    except OSError:
+        return False
+    return r.returncode == 0
 
 
 def _session_locked_combined() -> bool:
@@ -324,6 +389,7 @@ def _session_locked_combined() -> bool:
 
 def format_lock_diagnosis() -> str:
     """Human-readable snapshot for `raas.py --diagnose-lock`."""
+    invalidate_lock_cache()
     lines: list[str] = ["=== RAAS lock detection ===", f"getuid()={os.getuid()}"]
     uids = _dbus_uids_to_probe()
     lines.append(f"graphical/logind uids: {_seat_session_uids()}")
@@ -368,77 +434,50 @@ def is_session_locked(*, use_cache: bool = True) -> bool:
 
 
 def invalidate_lock_cache() -> None:
-    global _CACHE
+    global _CACHE, _DBUS_UIDS_CACHE, _SESSION_LIST_CACHE
     with _CACHE_LOCK:
         _CACHE = (None, 0.0)
+        _DBUS_UIDS_CACHE = (None, 0.0)
+        _SESSION_LIST_CACHE = (None, 0.0)
+        _DBUS_METHOD_CACHE.clear()
 
 
 def _locked_hint_loginctl() -> bool:
     my_uid = os.getuid()
     if my_uid == 0:
         return _any_user_session_locked_hint()
-    try:
-        r = subprocess.run(
-            ["loginctl", "list-sessions", "--json=short"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except FileNotFoundError:
-        logger.warning("loginctl not found — cannot detect screen lock")
+    sessions = _loginctl_sessions_json()
+    if sessions:
+        for s in sessions:
+            uid = s.get("uid")
+            if uid is None:
+                continue
+            try:
+                if int(uid) != my_uid:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            sid = s.get("session") or s.get("id")
+            if sid is None:
+                continue
+            if _session_locked_hint(str(sid)):
+                return True
         return False
-
-    if r.returncode == 0 and r.stdout.strip():
-        try:
-            sessions = json.loads(r.stdout)
-            for s in sessions:
-                uid = s.get("uid")
-                if uid is None:
-                    continue
-                try:
-                    if int(uid) != my_uid:
-                        continue
-                except (TypeError, ValueError):
-                    continue
-                sid = s.get("session") or s.get("id")
-                if sid is None:
-                    continue
-                if _session_locked_hint(str(sid)):
-                    return True
-            return False
-        except json.JSONDecodeError:
-            pass
 
     return _locked_hint_parse_text(my_uid)
 
 
 def _any_user_session_locked_hint() -> bool:
     """When running as root, detect lock on any graphical/login session (service context)."""
-    try:
-        r = subprocess.run(
-            ["loginctl", "list-sessions", "--json=short"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except FileNotFoundError:
-        logger.warning("loginctl not found — cannot detect screen lock")
+    sessions = _loginctl_sessions_json()
+    if sessions:
+        for s in sessions:
+            sid = s.get("session") or s.get("id")
+            if sid is None:
+                continue
+            if _session_locked_hint(str(sid)):
+                return True
         return False
-
-    if r.returncode == 0 and r.stdout.strip():
-        try:
-            sessions = json.loads(r.stdout)
-            for s in sessions:
-                sid = s.get("session") or s.get("id")
-                if sid is None:
-                    continue
-                if _session_locked_hint(str(sid)):
-                    return True
-            return False
-        except json.JSONDecodeError:
-            pass
 
     try:
         r = subprocess.run(

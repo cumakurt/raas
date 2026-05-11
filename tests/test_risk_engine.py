@@ -19,7 +19,7 @@ def test_ssh_failed_base() -> None:
 
 
 def test_score_override() -> None:
-    eng = RiskEngine(score_overrides={"ssh_failed": 10})
+    eng = RiskEngine(night_bonus=0, score_overrides={"ssh_failed": 10})
     ev = AccessEvent(
         kind=EventKind.SSH_FAILED,
         raw_line="x",
@@ -32,7 +32,7 @@ def test_score_override() -> None:
 
 
 def test_unknown_kind_bucket() -> None:
-    eng = RiskEngine()
+    eng = RiskEngine(night_bonus=0)
     ev = AccessEvent(kind=EventKind.UNKNOWN, raw_line="x")
     r = eng.evaluate(ev)
     assert r.score == 10

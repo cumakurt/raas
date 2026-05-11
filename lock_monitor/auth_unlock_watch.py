@@ -9,11 +9,13 @@ from pathlib import Path
 from config.settings import Settings
 from lock_monitor.intrusion_notify import LockMediaThrottle, send_lock_intrusion_alert
 from lock_monitor.lock_auth_patterns import is_probable_lock_screen_auth_failure
-from lock_monitor.session_lock import _dbus_uids_to_probe, invalidate_lock_cache, is_session_locked
+from lock_monitor.session_lock import _dbus_uids_to_probe, is_session_locked
 from notifier.telegram import TelegramNotifier
 from utils.alarm_file_log import AlarmFileLogger
 
 logger = logging.getLogger(__name__)
+
+_MAX_AUTH_POLL_READ_BYTES = 256 * 1024
 
 
 def _desktop_uid(settings: Settings) -> int:
@@ -45,11 +47,15 @@ def run_auth_unlock_watch(
 
     path = Path(settings.log.path).expanduser()
     position = 0
+    inode: int | None = None
     if path.is_file():
         try:
-            position = path.stat().st_size
+            st = path.stat()
+            position = st.st_size
+            inode = st.st_ino
         except OSError:
             position = 0
+            inode = None
 
     poll = max(0.1, float(settings.lock_intrusion.auth_poll_interval_seconds))
     last_emit = 0.0
@@ -64,19 +70,25 @@ def run_auth_unlock_watch(
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll):
             break
-        invalidate_lock_cache()
-        if not is_session_locked(use_cache=True):
-            continue
         if not path.is_file():
             continue
         try:
+            st = path.stat()
+            if inode is None and position == 0:
+                inode = st.st_ino
+                position = st.st_size
+                continue
+            if inode is not None and st.st_ino != inode:
+                position = 0
+            inode = st.st_ino
+            if st.st_size < position:
+                position = 0
+            if st.st_size <= position:
+                continue
+            if st.st_size - position > _MAX_AUTH_POLL_READ_BYTES:
+                position = max(0, st.st_size - _MAX_AUTH_POLL_READ_BYTES)
+
             with open(path, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                if size < position:
-                    position = 0
-                if size <= position:
-                    continue
                 f.seek(position)
                 chunk = f.read()
                 position = f.tell()
@@ -84,10 +96,17 @@ def run_auth_unlock_watch(
             logger.debug("auth unlock watch read error: %s", e)
             continue
 
-        for line in chunk.splitlines():
-            line = line.strip()
-            if not line or not is_probable_lock_screen_auth_failure(line):
-                continue
+        candidates = [
+            line.strip()
+            for line in chunk.splitlines()
+            if line.strip() and is_probable_lock_screen_auth_failure(line)
+        ]
+        if not candidates:
+            continue
+        if not is_session_locked(use_cache=True):
+            continue
+
+        for line in candidates:
             now = time.monotonic()
             if now - last_emit < min_gap:
                 continue
