@@ -38,6 +38,8 @@ class EventKind(str, Enum):
     VPN_AUTH_FAIL = "vpn_auth_failure"
     DB_AUTH_FAIL = "database_auth_failure"
     CONTAINER_AUTH = "container_runtime_auth"
+    FILE_DELETED = "file_deleted"
+    FILE_MODIFIED = "file_modified"
     UNKNOWN = "unknown"
 
 

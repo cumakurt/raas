@@ -121,6 +121,19 @@ class LockIntrusionConfig:
 
 
 @dataclass
+class FileDeletionConfig:
+    """inotify watcher for critical system path deletion/modification events."""
+
+    enabled: bool = True
+    paths: tuple[Path, ...] = ()
+    recursive: bool = True
+    include_moves: bool = True
+    cooldown_seconds: float = 1.0
+    ignore_globs: tuple[str, ...] = ()
+    max_watch_dirs: int = 4096
+
+
+@dataclass
 class HealthConfig:
     """Minimal JSON HTTP endpoint for ops (localhost by default)."""
 
@@ -154,6 +167,7 @@ class Settings:
     risk: RiskConfig = field(default_factory=RiskConfig)
     alarm_log: AlarmLogConfig = field(default_factory=AlarmLogConfig)
     lock_intrusion: LockIntrusionConfig = field(default_factory=LockIntrusionConfig)
+    file_deletion: FileDeletionConfig = field(default_factory=FileDeletionConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
     quiet_hours: QuietHoursConfig = field(default_factory=QuietHoursConfig)
     alert_coalesce: AlertCoalesceConfig = field(default_factory=AlertCoalesceConfig)
@@ -301,6 +315,33 @@ def _parse_telegram_parse_mode(raw: Any) -> str:
     return "HTML"
 
 
+def _parse_path_tuple(raw: Any) -> tuple[Path, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, (str, Path)):
+        s = str(raw).strip()
+        return (Path(s).expanduser(),) if s else ()
+    if isinstance(raw, list):
+        out: list[Path] = []
+        for item in raw:
+            s = str(item).strip()
+            if s:
+                out.append(Path(s).expanduser())
+        return tuple(out)
+    return ()
+
+
+def _parse_str_tuple(raw: Any) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        s = raw.strip()
+        return (s,) if s else ()
+    if isinstance(raw, list):
+        return tuple(str(x).strip() for x in raw if str(x).strip())
+    return ()
+
+
 def load_settings(config_path: Path | None = None) -> Settings:
     """Load all settings from a single YAML file. No environment-variable overrides."""
     base_dir = Path(__file__).resolve().parent
@@ -428,6 +469,17 @@ def load_settings(config_path: Path | None = None) -> Settings:
         ),
     )
 
+    fd = cfg.get("file_deletion") if isinstance(cfg.get("file_deletion"), dict) else {}
+    file_deletion = FileDeletionConfig(
+        enabled=bool(fd.get("enabled", True)),
+        paths=_parse_path_tuple(fd.get("paths")),
+        recursive=bool(fd.get("recursive", True)),
+        include_moves=bool(fd.get("include_moves", True)),
+        cooldown_seconds=max(0.0, float(fd.get("cooldown_seconds", 1.0))),
+        ignore_globs=_parse_str_tuple(fd.get("ignore_globs")),
+        max_watch_dirs=max(1, int(fd.get("max_watch_dirs", 4096))),
+    )
+
     hb = cfg.get("health") if isinstance(cfg.get("health"), dict) else {}
     hb_bind = str(hb.get("bind", "127.0.0.1") or "127.0.0.1").strip()
     if hb_bind in ("0.0.0.0", "::", "[::]", "[::0]"):
@@ -477,6 +529,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         risk=risk,
         alarm_log=alarm_log,
         lock_intrusion=lock_intrusion,
+        file_deletion=file_deletion,
         health=health,
         quiet_hours=quiet_hours,
         alert_coalesce=alert_coalesce,

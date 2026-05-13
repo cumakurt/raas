@@ -5,6 +5,8 @@
 
 **RAAS** is a lightweight Python agent that tails the distribution **auth log file** or **systemd journal** (`journalctl`), parses SSH, sudo, **firewall, auditd, fail2ban**, and related security events, assigns a risk score with **severity** and optional **MITRE ATT&CK** tags, and alerts via **Telegram** (rich HTML messages, optional rate limiting and retry queue) and/or **webhook**. YAML tuning: thresholds per event kind, **ignore trusted IPs/CIDRs or usernames**, **quiet hours**, **alert coalescing**, optional **HTTP health** JSON and **Prometheus `/metrics`**, and **SIGHUP** config reload for the main watcher.
 
+Additionally, RAAS uses an **inotify-based watcher** to monitor **critical Linux system paths only** (e.g. `/etc`, `/bin`, `/sbin`, `/usr/bin`, `/boot`, `/root`, `/lib`) for **file deletions and modifications**. Events on these paths immediately trigger high-severity alerts with MITRE ATT&CK tags (T1485 / T1565) through the same notifier pipeline.
+
 **Türkçe belge ve ayrıntılı Telegram kurulumu:** [README.tr.md](README.tr.md)
 
 **System packages (DBus, screen capture, ffmpeg, per-distro):** [DEPENDENCIES.md](DEPENDENCIES.md) · [DEPENDENCIES.tr.md](DEPENDENCIES.tr.md)
@@ -102,7 +104,7 @@ By default each alert that crosses the risk threshold is appended to **`/var/log
 sudo tail -f /var/log/raas/alarms.jsonl
 ```
 
-- **`channel`:** `auth_log` (parsed auth/secure events) or `lock_intrusion` (screen lock activity).
+- **`channel`:** `auth_log` (parsed auth/secure events), `file_integrity` (critical path deletion/modification), or `lock_intrusion` (screen lock activity).
 - Auth records may include **`severity`**, **`mitre_techniques`**, and **`deliveries`** (per-channel success). **`notify_delivered`** / **`notify_attempted`:** if `notify_delivered` is **false** while `notify_attempted` is **true**, check `journalctl` for `Telegram API error` (wrong token, `chat_id`, or **`api_base_url` must not contain `/bot`** — see Telegram section).
 - **`raw_line`:** excerpt of the original log line (sensitive; protect file permissions).
 
@@ -130,6 +132,8 @@ Send **`SIGHUP`** to the main process (e.g. `kill -HUP $(pidof -x python3)` matc
 | `deliveries.telegram: false`, HTTP 404 | `telegram.api_base_url` must be `https://api.telegram.org` only (no `/bot` in the URL) |
 | High alert volume | Raise `risk.notify_threshold`, use `notify_threshold_by_kind`, enable `alert_coalesce`, or add `ignore_source_ips` / `ignore_users` |
 | Telegram 401 / 400 | Invalid `bot_token` or `chat_id`; bot not started in DM; group/channel permissions |
+| No file-deletion alerts | `file_deletion.enabled: true` in YAML; service must run as root (inotify needs read access to `/etc`, `/boot`, etc.); check `journalctl -u raas` for `File deletion monitor active` |
+| Too many file-deletion alerts | Add path glob to `file_deletion.ignore_globs`; raise `file_deletion.cooldown_seconds`; lower score with `risk.scores.file_modified: 30` |
 
 **Uninstall** (stop/disable unit; files kept unless `--purge`):
 
@@ -233,6 +237,53 @@ A successful delivery includes `"ok":true` in the JSON.
 
 The unified parser (`parser/log_parser.py`) first applies **SSH/OpenSSH** rules (accepted logins, failed password/publickey/keyboard-interactive, invalid user, max auth attempts, “too many authentication failures”, preauth disconnects), then **PAM sshd** failures (deduplicated when they mirror a recent sshd failure for the same user/IP), **sudo** / **su** / **root context**, **vsftpd/proftpd**, **telnetd**, **Dovecot/Postfix SASL**, **Cockpit**, **local console** login, and **extra** patterns when present in the same stream: **auditd** (login failures, AVC denied, account change heuristics), **UFW BLOCK**, **nftables** DROP lines, **fail2ban** ban/unban, **polkit**, **VPN** auth failures, **PostgreSQL/MySQL** auth failures, **container** registry hints, and **sudo** authentication failures. Heuristics vary by distro log format—see `parser/security_extras.py`. Tune `risk.notify_threshold` and **`notify_threshold_by_kind`** if a source is noisy.
 
+## Critical system file integrity monitoring
+
+RAAS includes a dedicated **inotify watcher** (`watcher/file_delete_watch.py`) that monitors a curated set of **critical Linux system directories** — and nothing else. It does **not** watch home directories, user data, or the full filesystem.
+
+### Default watched paths
+
+| Path | Purpose |
+|------|---------|
+| `/etc` | System-wide configuration |
+| `/bin`, `/sbin` | Core system binaries |
+| `/usr/bin`, `/usr/sbin` | User/admin system binaries |
+| `/usr/local/bin`, `/usr/local/sbin` | Locally installed binaries |
+| `/usr/lib`, `/lib`, `/lib64` | System and C runtime libraries |
+| `/boot` | Kernel, initrd, GRUB files |
+| `/root` | Root account home directory |
+
+All paths can be overridden via `file_deletion.paths` in YAML.
+
+### Detected actions
+
+| Action | inotify event | EventKind | Default score | MITRE |
+|--------|--------------|-----------|---------------|-------|
+| File / directory deleted | `IN_DELETE` | `file_deleted` | 80 | T1485 |
+| File moved out of watched path | `IN_MOVED_FROM` | `file_deleted` | 80 | T1485 |
+| File content modified | `IN_MODIFY` | `file_modified` | 75 | T1565 |
+
+Both event kinds pass through the standard risk engine → notifier pipeline (Telegram HTML alert + webhook JSON + alarm file). Score overrides: `risk.scores.file_deleted` / `risk.scores.file_modified` in YAML.
+
+### Example config (`file_deletion` block)
+
+```yaml
+file_deletion:
+  enabled: true
+  # Override default critical paths (optional — leave unset to use built-in list)
+  # paths:
+  #   - /etc
+  #   - /boot
+  recursive: true
+  include_moves: true
+  cooldown_seconds: 1.0
+  # Glob patterns to ignore (applied to full path)
+  ignore_globs:
+    - "*/lost+found/*"
+    - "*/tmp/*"
+  max_watch_dirs: 4096
+```
+
 ## Configuration overview
 
 See **`config/config.yaml.example`** for all keys and comments.
@@ -247,6 +298,7 @@ See **`config/config.yaml.example`** for all keys and comments.
 - **`health`** — optional JSON **`GET /`** and **`GET /health`** on `bind`:`port` (default `127.0.0.1:8765`, `enabled: false`). Extended counters (coalesce/quiet suppressions, Telegram success/fail, config reloads, etc.).
 - **`prometheus`** — when `enabled: true` and **`health.enabled`**, **`GET /metrics`** on the **same** bind/port exposes **Prometheus** text metrics.
 - **`lock_intrusion`** — alert when input is detected while the session is locked (enabled by default; set `enabled: false` to turn off)
+- **`file_deletion`** — **inotify-based watcher** for critical Linux system paths only. Keys: `enabled` (default `true`), `paths` (list of directories; omit to use the built-in critical-path list), `recursive` (default `true`), `include_moves` (emit alert on `IN_MOVED_FROM`; default `true`), `cooldown_seconds` (minimum seconds between repeated alerts for the same path; default `1.0`), `ignore_globs` (list of glob patterns to skip), `max_watch_dirs` (hard cap on inotify descriptors; default `4096`). Fires `file_deleted` (score 80, MITRE T1485) and `file_modified` (score 75, MITRE T1565) events through the normal risk → notifier pipeline.
 
 ### Lock screen, input, screen capture, and webcam
 

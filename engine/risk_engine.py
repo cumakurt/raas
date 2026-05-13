@@ -176,6 +176,12 @@ class RiskEngine:
         elif k == EventKind.CONTAINER_AUTH:
             score = self._ov(EventKind.CONTAINER_AUTH.value, 40)
             reasons.append("Container registry/runtime auth denial")
+        elif k == EventKind.FILE_DELETED:
+            score = self._ov(EventKind.FILE_DELETED.value, 80)
+            reasons.append("File or directory deletion observed")
+        elif k == EventKind.FILE_MODIFIED:
+            score = self._ov(EventKind.FILE_MODIFIED.value, 75)
+            reasons.append("Critical file content modification observed")
         else:
             score = self._ov(EventKind.UNKNOWN.value, 10)
             reasons.append("Access-related event")

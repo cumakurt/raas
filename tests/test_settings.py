@@ -119,3 +119,34 @@ log:
         assert s.lock_intrusion.lock_state_cache_ttl_seconds == 3.0
     finally:
         p.unlink(missing_ok=True)
+
+
+def test_file_deletion_config_defaults_and_overrides() -> None:
+    yaml_text = """
+log:
+  path: auto
+file_deletion:
+  enabled: true
+  paths:
+    - /etc
+    - /boot
+  recursive: false
+  include_moves: false
+  cooldown_seconds: 2.5
+  ignore_globs:
+    - "*/tmp/*"
+  max_watch_dirs: 64
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_text)
+        p = Path(f.name)
+    try:
+        s = load_settings(p)
+        assert tuple(str(x) for x in s.file_deletion.paths) == ("/etc", "/boot")
+        assert s.file_deletion.recursive is False
+        assert s.file_deletion.include_moves is False
+        assert s.file_deletion.cooldown_seconds == 2.5
+        assert s.file_deletion.ignore_globs == ("*/tmp/*",)
+        assert s.file_deletion.max_watch_dirs == 64
+    finally:
+        p.unlink(missing_ok=True)

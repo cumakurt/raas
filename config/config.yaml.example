@@ -125,3 +125,18 @@ lock_intrusion:
   # desktop_uid: 1000   # optional; omit = auto (first graphical session / DBus uid)
   # capture_width: 1280
   # capture_height: 720
+
+# Critical system file integrity monitoring: inotify watches only curated system paths by default.
+# Deletion/move-away events alert as file_deleted; content writes alert as file_modified.
+file_deletion:
+  enabled: true
+  # paths:
+  #   - /etc
+  #   - /boot
+  recursive: true
+  include_moves: true
+  cooldown_seconds: 1.0
+  ignore_globs:
+    - "*/lost+found/*"
+    - "*/tmp/*"
+  max_watch_dirs: 4096

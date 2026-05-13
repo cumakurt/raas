@@ -10,7 +10,7 @@ from typing import Any, Callable
 import requests
 
 from engine.risk_engine import RiskResult
-from parser.events import AccessEvent
+from parser.events import AccessEvent, EventKind
 from utils.delivery_retry import append_telegram_retry_locked
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,8 @@ _KIND_TITLES: dict[str, str] = {
     "vpn_auth_failure": "VPN authentication failure",
     "database_auth_failure": "Database authentication failure",
     "container_runtime_auth": "Container / registry auth issue",
+    "file_deleted": "Critical file deleted",
+    "file_modified": "Critical file modified",
     "unknown": "Security-related event",
 }
 
@@ -65,6 +67,10 @@ _EXTRA_DISPLAY_KEYS: frozenset[str] = frozenset({
     "service_hint",
     "runtime",
     "result",
+    "action",
+    "item_type",
+    "path",
+    "watched_root",
 })
 
 _EXTRA_LABELS: dict[str, str] = {
@@ -82,6 +88,10 @@ _EXTRA_LABELS: dict[str, str] = {
     "service_hint": "Hint",
     "runtime": "Runtime",
     "result": "Result",
+    "action": "Action",
+    "item_type": "Item type",
+    "path": "Path",
+    "watched_root": "Watched root",
 }
 
 
@@ -168,6 +178,14 @@ def _suggested_checks(kind_value: str) -> list[str]:
         "container_runtime_auth": [
             "Registry or daemon denied pull/login; verify tokens and image names.",
         ],
+        "file_deleted": [
+            "Verify whether the deletion was expected maintenance or package activity.",
+            "If unexpected, preserve logs and inspect recent privileged shell/package actions.",
+        ],
+        "file_modified": [
+            "Compare the file against a known-good package or backup copy.",
+            "If unexpected, inspect recent privileged shell/package actions and persistence paths.",
+        ],
         "cockpit_session": [
             "Web admin session opened; confirm operator and source network.",
         ],
@@ -228,6 +246,8 @@ class TelegramNotifier:
         return self._send_message(text, parse_mode=parse)
 
     def _format_message_plain(self, event: AccessEvent, risk: RiskResult) -> str:
+        if event.kind in (EventKind.FILE_DELETED, EventKind.FILE_MODIFIED):
+            return self._format_file_message_plain(event, risk)
         kind_v = event.kind.value
         title = _human_kind_title(kind_v)
         emoji = _severity_emoji(risk.severity)
@@ -268,6 +288,8 @@ class TelegramNotifier:
         return "\n".join(lines)
 
     def _format_message_html(self, event: AccessEvent, risk: RiskResult) -> str:
+        if event.kind in (EventKind.FILE_DELETED, EventKind.FILE_MODIFIED):
+            return self._format_file_message_html(event, risk)
         esc = html.escape
         kind_v = event.kind.value
         title = esc(_human_kind_title(kind_v))
@@ -318,6 +340,82 @@ class TelegramNotifier:
         lines.append("📄 <b>Source log line</b>")
         lines.append(f"<pre>{raw_snip}</pre>")
 
+        text = "\n".join(lines)
+        if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH - 60:
+            text = text[: TELEGRAM_MAX_MESSAGE_LENGTH - 60].rstrip() + "\n\n<i>(truncated for Telegram limit)</i>"
+        return text
+
+    def _format_file_message_plain(self, event: AccessEvent, risk: RiskResult) -> str:
+        extra = event.extra or {}
+        kind_v = event.kind.value
+        lines = [
+            "RAAS file alert",
+            f"Severity: {risk.severity.upper()} - Risk {risk.score}/100",
+            "",
+            _human_kind_title(kind_v),
+        ]
+        for key, label in (
+            ("action", "Action"),
+            ("item_type", "Item type"),
+            ("path", "Path"),
+            ("watched_root", "Watched root"),
+        ):
+            value = extra.get(key)
+            if value:
+                lines.append(f"{label}: {value}")
+        if event.user:
+            lines.append(f"Owner: {event.user}")
+        if risk.mitre_techniques:
+            lines.append("MITRE: " + ", ".join(risk.mitre_techniques))
+        lines.append("")
+        lines.append("Why this risk score:")
+        for reason in risk.reasons:
+            lines.append(f"  - {reason}")
+        lines.append("")
+        lines.append("Suggested checks:")
+        for hint in _suggested_checks(kind_v)[:3]:
+            lines.append(f"  - {hint}")
+        return "\n".join(lines)
+
+    def _format_file_message_html(self, event: AccessEvent, risk: RiskResult) -> str:
+        esc = html.escape
+        extra = event.extra or {}
+        kind_v = event.kind.value
+        lines = [
+            "<b>RAAS file alert</b>",
+            f"<b>Severity:</b> {esc(risk.severity.upper())} · "
+            f"<b>Risk score:</b> <code>{risk.score}</code>/100",
+            "",
+            f"<b>What happened</b>\n{esc(_human_kind_title(kind_v))}",
+            "",
+        ]
+        details: list[str] = []
+        for key, label in (
+            ("action", "Action"),
+            ("item_type", "Item type"),
+            ("path", "Path"),
+            ("watched_root", "Watched root"),
+        ):
+            value = extra.get(key)
+            if value:
+                details.append(f"<b>{esc(label)}</b> · <code>{esc(str(value))}</code>")
+        if event.user:
+            details.append(f"<b>Owner</b> · <code>{esc(event.user)}</code>")
+        if details:
+            lines.append("<b>Key details</b>")
+            lines.extend(details)
+            lines.append("")
+        if risk.mitre_techniques:
+            lines.append("<b>MITRE ATT&amp;CK</b>")
+            lines.append(", ".join(f"<code>{esc(t)}</code>" for t in risk.mitre_techniques))
+            lines.append("")
+        lines.append("<b>Why this risk score</b>")
+        for reason in risk.reasons:
+            lines.append(f"  - {esc(reason)}")
+        lines.append("")
+        lines.append("<b>Suggested checks</b>")
+        for hint in _suggested_checks(kind_v)[:3]:
+            lines.append(f"  - {esc(hint)}")
         text = "\n".join(lines)
         if len(text) > TELEGRAM_MAX_MESSAGE_LENGTH - 60:
             text = text[: TELEGRAM_MAX_MESSAGE_LENGTH - 60].rstrip() + "\n\n<i>(truncated for Telegram limit)</i>"

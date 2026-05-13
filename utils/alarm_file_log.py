@@ -44,6 +44,7 @@ class AlarmFileLogger:
         risk: RiskResult,
         notify_threshold: int,
         deliveries: dict[str, bool],
+        channel: str = "auth_log",
     ) -> None:
         """deliveries maps notifier channel_id (telegram, webhook, …) to success."""
         notify_attempted = bool(deliveries)
@@ -51,7 +52,7 @@ class AlarmFileLogger:
         self._append(
             {
                 "ts": datetime.now(timezone.utc).isoformat(),
-                "channel": "auth_log",
+                "channel": channel,
                 "kind": event.kind.value,
                 "risk_score": risk.score,
                 "severity": risk.severity,

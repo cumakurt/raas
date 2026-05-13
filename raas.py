@@ -21,6 +21,7 @@ from engine.risk_engine import RiskEngine
 from notifier.build import build_alert_notifiers
 from notifier.telegram import TelegramNotifier
 from parser.log_parser import parse_log_line
+from parser.events import AccessEvent, EventKind
 from utils.alarm_file_log import AlarmFileLogger
 from utils.burst_suppress import BurstSuppressor
 from utils.delivery_retry import drain_telegram_retry_file
@@ -31,6 +32,7 @@ from utils.logging_config import setup_logging
 from utils.net_norm import normalize_source_ip
 from utils.quiet_hours import is_quiet_hours
 from watcher.journal_watcher import default_journalctl_args, follow_journal_lines
+from watcher.file_delete_watch import FileDeletionEvent, run_file_delete_watch
 from watcher.log_watcher import follow_file_lines
 
 logger = logging.getLogger(__name__)
@@ -110,6 +112,21 @@ def _user_ignored(user: str | None, ignored: frozenset[str]) -> bool:
     if not user or not ignored:
         return False
     return user.strip().lower() in ignored
+
+
+def _file_deletion_event_to_access_event(event: FileDeletionEvent) -> AccessEvent:
+    kind = EventKind.FILE_MODIFIED if event.action == "modified" else EventKind.FILE_DELETED
+    return AccessEvent(
+        kind=kind,
+        raw_line=event.raw_line(),
+        user=event.user,
+        extra={
+            "action": event.action,
+            "item_type": event.item_type,
+            "path": str(event.path),
+            "watched_root": str(event.watched_root),
+        },
+    )
 
 
 def main() -> int:
@@ -206,6 +223,7 @@ def main() -> int:
 
     event_dedup = AuthEventDedup()
     alarm_file = AlarmFileLogger(settings.alarm_log.path, enabled=settings.alarm_log.enabled)
+    process_event_lock = threading.Lock()
 
     health_state.set_backend(settings.log.backend)
     health_server: ThreadingHTTPServer | None = None
@@ -286,6 +304,116 @@ def main() -> int:
     else:
         logger.info("Lock intrusion monitoring disabled (see lock_intrusion in config)")
 
+    last_retry_drain = 0.0
+
+    def _drain_retry_queue_if_due(now: float) -> None:
+        nonlocal last_retry_drain
+        if (
+            settings.telegram.retry_enabled
+            and settings.telegram.retry_queue_path
+            and now - last_retry_drain >= _RETRY_DRAIN_INTERVAL_SECONDS
+        ):
+            last_retry_drain = now
+            primary = next(
+                (n for n in alert_notifiers if getattr(n, "channel_id", "") == "telegram"),
+                None,
+            )
+            if isinstance(primary, TelegramNotifier):
+                drain_telegram_retry_file(
+                    settings.telegram.retry_queue_path,
+                    lambda o: primary.send_text_raw(
+                        str(o.get("text", "")),
+                        parse_mode=str(o.get("parse_mode", "") or ""),
+                        chat_id=str(o.get("chat_id", "") or primary.chat_id),
+                    ),
+                    max_per_tick=3,
+                )
+
+    def _process_security_event(
+        event: AccessEvent,
+        *,
+        alarm_channel: str,
+        apply_auth_filters: bool,
+        allow_coalesce: bool,
+    ) -> None:
+        with process_event_lock:
+            now = time.monotonic()
+            _drain_retry_queue_if_due(now)
+            if event.source_ip:
+                event.source_ip = normalize_source_ip(event.source_ip)
+            if apply_auth_filters:
+                if is_source_ignored(event.source_ip, ignore_rules):
+                    return
+                if _user_ignored(event.user, settings.risk.ignore_users):
+                    return
+                if not event_dedup.should_emit(event):
+                    return
+            health_state.record_parsed_event(event.kind.value)
+            risk = engine.evaluate(event)
+            notify_threshold = settings.risk.notify_threshold_by_kind.get(
+                event.kind.value,
+                settings.risk.notify_threshold,
+            )
+            logger.info(
+                "Event %s risk=%s severity=%s user=%s ip=%s",
+                event.kind.value,
+                risk.score,
+                risk.severity,
+                event.user,
+                event.source_ip,
+            )
+            if risk.score < notify_threshold:
+                return
+
+            packs = (
+                suppressor.process(event, risk, notify_threshold, now)
+                if allow_coalesce
+                else [(event, risk, notify_threshold)]
+            )
+            if not packs:
+                health_state.record_coalesce_suppressed(1)
+                return
+            for ev2, rk2, th2 in packs:
+                quiet = is_quiet_hours(settings.quiet_hours) and settings.quiet_hours.suppress_alerts
+                deliveries: dict[str, bool] = {}
+                if quiet:
+                    health_state.record_quiet_suppress()
+                else:
+                    for n in alert_notifiers:
+                        if n.channel_id == "telegram_high" and rk2.severity != "high":
+                            continue
+                        deliveries[n.channel_id] = n.send_alert(ev2, rk2)
+                if settings.alarm_log.enabled:
+                    alarm_file.write_auth_event(
+                        event=ev2,
+                        risk=rk2,
+                        notify_threshold=th2,
+                        deliveries=deliveries,
+                        channel=alarm_channel,
+                    )
+                health_state.record_alert()
+
+    def run_file_deletion_thread() -> None:
+        try:
+            run_file_delete_watch(
+                settings,
+                stop_event,
+                lambda ev: _process_security_event(
+                    _file_deletion_event_to_access_event(ev),
+                    alarm_channel="file_integrity",
+                    apply_auth_filters=False,
+                    allow_coalesce=False,
+                ),
+            )
+        except Exception:
+            logger.exception("File deletion monitor crashed")
+
+    if settings.file_deletion.enabled:
+        t = threading.Thread(target=run_file_deletion_thread, name="file-deletion-watch", daemon=True)
+        t.start()
+    else:
+        logger.info("File deletion monitoring disabled (see file_deletion in config)")
+
     if settings.log.backend == "journal":
         logger.info("Watching systemd journal (journalctl)")
     else:
@@ -326,8 +454,6 @@ def main() -> int:
             health_state.record_config_reload()
             logger.info("Runtime config reloaded from disk")
 
-    last_retry_drain = 0.0
-
     try:
         while not stop_event.is_set():
             source_reopen = False
@@ -343,79 +469,16 @@ def main() -> int:
                     source_reopen = True
                     break
 
-                now = time.monotonic()
-                if (
-                    settings.telegram.retry_enabled
-                    and settings.telegram.retry_queue_path
-                    and now - last_retry_drain >= _RETRY_DRAIN_INTERVAL_SECONDS
-                ):
-                    last_retry_drain = now
-                    primary = next(
-                        (n for n in alert_notifiers if getattr(n, "channel_id", "") == "telegram"),
-                        None,
-                    )
-                    if isinstance(primary, TelegramNotifier):
-                        drain_telegram_retry_file(
-                            settings.telegram.retry_queue_path,
-                            lambda o: primary.send_text_raw(
-                                str(o.get("text", "")),
-                                parse_mode=str(o.get("parse_mode", "") or ""),
-                                chat_id=str(o.get("chat_id", "") or primary.chat_id),
-                            ),
-                            max_per_tick=3,
-                        )
-
                 health_state.record_line()
                 event = parse_log_line(line)
                 if event is None:
                     continue
-                if event.source_ip:
-                    event.source_ip = normalize_source_ip(event.source_ip)
-                if is_source_ignored(event.source_ip, ignore_rules):
-                    continue
-                if _user_ignored(event.user, settings.risk.ignore_users):
-                    continue
-                if not event_dedup.should_emit(event):
-                    continue
-                health_state.record_parsed_event(event.kind.value)
-                risk = engine.evaluate(event)
-                notify_threshold = settings.risk.notify_threshold_by_kind.get(
-                    event.kind.value,
-                    settings.risk.notify_threshold,
+                _process_security_event(
+                    event,
+                    alarm_channel="auth_log",
+                    apply_auth_filters=True,
+                    allow_coalesce=True,
                 )
-                logger.info(
-                    "Event %s risk=%s severity=%s user=%s ip=%s",
-                    event.kind.value,
-                    risk.score,
-                    risk.severity,
-                    event.user,
-                    event.source_ip,
-                )
-                if risk.score < notify_threshold:
-                    continue
-
-                packs = suppressor.process(event, risk, notify_threshold, now)
-                if not packs:
-                    health_state.record_coalesce_suppressed(1)
-                    continue
-                for ev2, rk2, th2 in packs:
-                    quiet = is_quiet_hours(settings.quiet_hours) and settings.quiet_hours.suppress_alerts
-                    deliveries: dict[str, bool] = {}
-                    if quiet:
-                        health_state.record_quiet_suppress()
-                    else:
-                        for n in alert_notifiers:
-                            if n.channel_id == "telegram_high" and rk2.severity != "high":
-                                continue
-                            deliveries[n.channel_id] = n.send_alert(ev2, rk2)
-                    if settings.alarm_log.enabled:
-                        alarm_file.write_auth_event(
-                            event=ev2,
-                            risk=rk2,
-                            notify_threshold=th2,
-                            deliveries=deliveries,
-                        )
-                    health_state.record_alert()
             if stop_event.is_set():
                 break
             if source_reopen:

@@ -32,6 +32,8 @@ _KIND_TO_MITRE: dict[EventKind, list[str]] = {
     EventKind.VPN_AUTH_FAIL: ["T1110"],
     EventKind.DB_AUTH_FAIL: ["T1110"],
     EventKind.CONTAINER_AUTH: ["T1552"],
+    EventKind.FILE_DELETED: ["T1485"],
+    EventKind.FILE_MODIFIED: ["T1565"],
     EventKind.UNKNOWN: [],
 }
 
