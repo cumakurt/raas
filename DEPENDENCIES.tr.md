@@ -38,7 +38,7 @@ Kilit; **oturum** DBus’ta (`GetActive`) ekran koruyucu servisleri, **loginctl*
 | Araç | Görev |
 |------|--------|
 | **`gdbus`** | `org.gnome.ScreenSaver`, `org.mate.ScreenSaver`, KDE/XFCE/Cinnamon vb. Genelde **`dbus`** veya **`dbus-x11`** paketinde. |
-| **`runuser`** (util-linux) | RAAS **root** iken oturum DBus’u **masaüstü kullanıcısı** olarak sorgular. Paket: **`util-linux`**. |
+| **`setpriv` / `runuser`** (util-linux) | RAAS **root** iken oturum DBus’u **masaüstü kullanıcısı** olarak sorgular (`setpriv … gdbus`, `runuser` fallback). Paket: **`util-linux`**. |
 
 Teşhis: `python3 raas.py --diagnose-lock`
 
@@ -136,7 +136,7 @@ sudo zypper install -y \
 | Özellik | Minimum | Tam kilit + Telegram medya |
 |---------|---------|----------------------------|
 | Auth günlüğü + risk + Telegram metni | Python + `requirements.txt` + günlük okuma | + internet |
-| Kilit (DBus) | + `gdbus` + root iken `runuser` | Yukarıdaki gibi |
+| Kilit (DBus) | + `gdbus` + root iken `setpriv`/`runuser` | Yukarıdaki gibi |
 | Kilit + girdi olayları | + pip `evdev` + `/dev/input` erişimi | Root değilse + `input` grubu |
 | Ekran + kamera uyarıları | + §7 paketleri | Önerilir |
 
@@ -145,6 +145,6 @@ sudo zypper install -y \
 ## 10. Sorun giderme
 
 - **`No accessible input devices`:** **`input`** grubu veya root.
-- **Kilit hiç algılanmıyor:** kilitliyken `--diagnose-lock`; **`gdbus`** kurulu mu; root’ta **`runuser`** var mı.
+- **Kilit hiç algılanmıyor:** kilitliyken `--diagnose-lock`; **`gdbus`** kurulu mu; root’ta **`setpriv`** veya **`runuser`** var mı.
 - **Ekran yakalanmıyor:** Wayland’da **`grim`**, X11’de **`ffmpeg`** veya **ImageMagick**; grafik oturumu var mı.
 - **Kamera açılmıyor:** **`ffmpeg`**, **`video`** grubu, `/dev/video*`.

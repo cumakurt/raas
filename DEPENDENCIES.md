@@ -38,7 +38,7 @@ Screen lock is detected using **session** DBus (`GetActive` on screensaver servi
 | Tool | Role |
 |------|------|
 | **`gdbus`** | Calls `org.gnome.ScreenSaver`, `org.mate.ScreenSaver`, KDE/XFCE/Cinnamon, etc. Usually in the **`dbus`** or **`dbus-x11`** package (name varies). |
-| **`runuser`** (util-linux) | When RAAS runs as **root**, session DBus is queried **as the desktop user** (`runuser -u … gdbus`). Package: **`util-linux`** (almost always installed). |
+| **`setpriv` / `runuser`** (util-linux) | When RAAS runs as **root**, session DBus is queried **as the desktop user** (`setpriv … gdbus`, with `runuser` fallback). Package: **`util-linux`** (almost always installed). |
 
 **Diagnosis:** `python3 raas.py --diagnose-lock`
 
@@ -93,7 +93,7 @@ sudo apt-get install -y \
 ```
 
 - `gdbus` is provided by **`dbus`** / **`dbus-x11`**.
-- `runuser` → **`util-linux`**.
+- `setpriv` / `runuser` → **`util-linux`**.
 
 ### Fedora / RHEL / Rocky / Alma (dnf)
 
@@ -139,7 +139,7 @@ sudo zypper install -y \
 | Feature | Minimal install | Full lock + Telegram media |
 |---------|-----------------|------------------------------|
 | Auth log + risk + Telegram text | Python + `requirements.txt` + auth log read | + stable network |
-| Lock detection (DBus) | + `gdbus` + `runuser` when root | As above |
+| Lock detection (DBus) | + `gdbus` + `setpriv`/`runuser` when root | As above |
 | Lock + input events | + `evdev` (pip) + `/dev/input` access | + `input` group if not root |
 | Screen + webcam alerts | + §7 packages | Recommended |
 
@@ -148,6 +148,6 @@ sudo zypper install -y \
 ## 10. Troubleshooting
 
 - **`No accessible input devices`:** add user to **`input`** group or run as root.
-- **Lock never detected:** run `--diagnose-lock` while the screen is locked; ensure **`gdbus`** works; as root ensure **`runuser`** exists.
+- **Lock never detected:** run `--diagnose-lock` while the screen is locked; ensure **`gdbus`** works; as root ensure **`setpriv`** or **`runuser`** exists.
 - **Screen capture skipped:** install **`grim`** (Wayland) or **`ffmpeg`** / **ImageMagick** (X11); ensure a graphical session exists for the user.
 - **Webcam fails:** install **`ffmpeg`**, check **`video`** group and `/dev/video*`.

@@ -232,7 +232,12 @@ def main() -> int:
             from lock_monitor.intrusion_notify import LockMediaThrottle
             from lock_monitor.input_watch import run_input_watch
 
-            media_thr = LockMediaThrottle(settings.lock_intrusion.media_cooldown_seconds)
+            media_thr = LockMediaThrottle(
+                max(
+                    settings.lock_intrusion.media_cooldown_seconds,
+                    settings.lock_intrusion.cooldown_seconds,
+                ),
+            )
 
             def _input() -> None:
                 run_input_watch(

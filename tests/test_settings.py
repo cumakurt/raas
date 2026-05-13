@@ -102,3 +102,20 @@ telegram:
         assert s.telegram.api_base_url == "https://api.telegram.org"
     finally:
         p.unlink(missing_ok=True)
+
+
+def test_lock_intrusion_cpu_defaults() -> None:
+    yaml_text = """
+log:
+  path: auto
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write(yaml_text)
+        p = Path(f.name)
+    try:
+        s = load_settings(p)
+        assert s.lock_intrusion.auth_failure_min_interval_seconds == 10.0
+        assert s.lock_intrusion.unlock_poll_interval_seconds == 2.0
+        assert s.lock_intrusion.lock_state_cache_ttl_seconds == 3.0
+    finally:
+        p.unlink(missing_ok=True)

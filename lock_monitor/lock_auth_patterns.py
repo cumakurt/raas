@@ -37,6 +37,20 @@ _LOCAL_CONTEXT = (
     "sssd",
 )
 
+_EXCLUDED_LOCAL_CONTEXT = (
+    "sudo:",
+    "sudo[",
+    "pam_unix(sudo:",
+    "su:",
+    "su[",
+    "pam_unix(su:",
+    "runuser",
+    "pkexec",
+    "polkit",
+    "cron",
+    "crond",
+)
+
 
 def is_probable_lock_screen_auth_failure(line: str) -> bool:
     """
@@ -47,6 +61,8 @@ def is_probable_lock_screen_auth_failure(line: str) -> bool:
     if not any(m in low for m in _FAILURE_MARKERS):
         return False
     if "sshd" in low or "sshd-session" in low:
+        return False
+    if any(ctx in low for ctx in _EXCLUDED_LOCAL_CONTEXT):
         return False
     if any(ctx in low for ctx in _LOCAL_CONTEXT):
         return True

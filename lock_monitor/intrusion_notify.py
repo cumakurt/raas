@@ -6,8 +6,6 @@ import time
 from typing import TYPE_CHECKING
 
 from lock_monitor.camera_capture import capture_jpeg
-from lock_monitor.screen_capture import capture_screen_png
-from utils.auth_tail_hint import tail_auth_hints
 
 if TYPE_CHECKING:
     from config.settings import Settings
@@ -23,9 +21,50 @@ _INPUT_KIND_LABELS: dict[str, str] = {
     "mouse_button": "Mouse button",
     "touchpad_or_touchscreen": "Touchpad / touchscreen",
     "input": "Generic input event",
-    "lock_auth_failure": "Failed unlock / greeter auth (from auth log)",
+    "lock_auth_failure": "Failed unlock attempt",
     "session_unlocked": "Session unlocked (lock released)",
 }
+
+_WEBCAM_CAPTURE_KINDS: frozenset[str] = frozenset(
+    {
+        "keyboard",
+        "mouse",
+        "mouse_button",
+        "touchpad_or_touchscreen",
+        "input",
+        "lock_auth_failure",
+    },
+)
+
+
+def _should_capture_webcam(input_kind: str) -> bool:
+    return input_kind in _WEBCAM_CAPTURE_KINDS
+
+
+def _webcam_throttle_key(input_kind: str) -> str:
+    if input_kind == "lock_auth_failure":
+        return "webcam:auth"
+    return "webcam:input"
+
+
+def _one_line(text: str, *, limit: int) -> str:
+    compact = " ".join(text.strip().split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _build_lock_summary(input_kind: str, *, extra_text: str = "", log_excerpt: str = "") -> str:
+    activity = _INPUT_KIND_LABELS.get(input_kind, input_kind.replace("_", " ").title())
+    lines = [
+        "RAAS lock alert",
+        f"Event: {activity}",
+    ]
+    if extra_text.strip():
+        lines.append(f"Note: {_one_line(extra_text, limit=220)}")
+    if log_excerpt.strip():
+        lines.append(f"Log: {_one_line(log_excerpt, limit=500)}")
+    return "\n".join(lines)[:3900]
 
 
 class LockMediaThrottle:
@@ -33,16 +72,17 @@ class LockMediaThrottle:
 
     def __init__(self, media_cooldown_seconds: float) -> None:
         self.media_cooldown_seconds = max(0.0, float(media_cooldown_seconds))
-        self._last_media = 0.0
+        self._last_media_by_key: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def should_capture_media(self) -> bool:
+    def should_capture_media(self, key: str = "default") -> bool:
         if self.media_cooldown_seconds <= 0:
             return True
         with self._lock:
             now = time.monotonic()
-            if now - self._last_media >= self.media_cooldown_seconds:
-                self._last_media = now
+            last_media = self._last_media_by_key.get(key, 0.0)
+            if now - last_media >= self.media_cooldown_seconds:
+                self._last_media_by_key[key] = now
                 return True
             return False
 
@@ -60,16 +100,15 @@ def send_lock_intrusion_alert(
     log_excerpt: str = "",
 ) -> None:
     """Send Telegram + optional screen/webcam + alarm JSON for one lock-related event."""
-    auth_hint = tail_auth_hints(settings.log.path)
-    screen_png: bytes | None = None
     jpeg: bytes | None = None
-    want_media = media_throttle.should_capture_media()
+    want_webcam = _should_capture_webcam(input_kind)
+    capture_webcam_now = (
+        want_webcam
+        and settings.lock_intrusion.capture_webcam
+        and media_throttle.should_capture_media(_webcam_throttle_key(input_kind))
+    )
 
-    if want_media and settings.lock_intrusion.capture_screen:
-        logger.warning("Lock screen alert — capturing screen (uid=%s)", desktop_uid)
-        screen_png = capture_screen_png(desktop_uid=desktop_uid)
-
-    if want_media and settings.lock_intrusion.capture_webcam:
+    if capture_webcam_now:
         logger.warning("Lock screen alert — capturing webcam")
         jpeg = capture_jpeg(
             settings.lock_intrusion.camera_device,
@@ -78,57 +117,22 @@ def send_lock_intrusion_alert(
             height=settings.lock_intrusion.capture_height,
         )
 
-    activity = _INPUT_KIND_LABELS.get(input_kind, input_kind.replace("_", " ").title())
-    lines = [
-        "🔒 RAAS — Screen lock alert",
-        "Real-time monitor: event while the graphical session is LOCKED.",
-        "",
-        f"⚡ Activity: {activity}",
-        "",
-    ]
-    if extra_text:
-        lines.append(extra_text)
-    else:
-        lines.append(
-            "Physical or virtual input was detected while the lock screen should be active. "
-            "Review recent auth events and who should legitimately be at the console.",
-        )
-    if log_excerpt.strip():
-        lines.append("")
-        lines.append("📄 Auth log (excerpt):")
-        lines.append(log_excerpt.strip()[:900])
-    if auth_hint.strip():
-        lines.append("")
-        lines.append("💡 Recent auth log hints (best-effort context; may include older lines):")
-        lines.append(auth_hint.strip()[:900])
-    summary = "\n".join(lines)[:3900]
+    summary = _build_lock_summary(
+        input_kind,
+        extra_text=extra_text,
+        log_excerpt=log_excerpt,
+    )
 
     photo_caption = (
-        f"🔒 RAAS lock · {activity} · cam {settings.lock_intrusion.camera_device}"
+        f"RAAS lock - {_INPUT_KIND_LABELS.get(input_kind, input_kind)} - {settings.lock_intrusion.camera_device}"
     )[:1024]
 
     delivered = False
     if telegram_ok and notifier is not None:
         delivered = bool(notifier.send_plain_text(summary))
-        if want_media and settings.lock_intrusion.capture_screen and screen_png:
-            delivered = bool(
-                notifier.send_photo(
-                    screen_png,
-                    caption="Screen capture",
-                    filename="screen.png",
-                    mime_type="image/png",
-                ),
-            ) or delivered
-        elif want_media and settings.lock_intrusion.capture_screen and not screen_png:
-            delivered = bool(
-                notifier.send_plain_text(
-                    "Screen capture failed (grim/ffmpeg/import missing or no DISPLAY).",
-                ),
-            ) or delivered
-
-        if want_media and settings.lock_intrusion.capture_webcam and jpeg:
+        if capture_webcam_now and jpeg:
             delivered = bool(notifier.send_photo(jpeg, caption=photo_caption)) or delivered
-        elif want_media and settings.lock_intrusion.capture_webcam and not jpeg:
+        elif capture_webcam_now and not jpeg:
             delivered = bool(
                 notifier.send_plain_text(
                     "Webcam capture failed — check ffmpeg/OpenCV and /dev/video permissions.",
@@ -138,15 +142,12 @@ def send_lock_intrusion_alert(
         logger.info("Telegram not configured — lock alert not sent")
 
     if alarm_file:
-        cap = summary
-        if log_excerpt:
-            cap = (summary + "\n" + log_excerpt)[:2000]
         alarm_file.write_lock_intrusion(
-            caption=cap,
+            caption=summary[:2000],
             input_kind=input_kind,
-            auth_hint=(auth_hint + "\n" + log_excerpt)[:2000],
+            auth_hint=_one_line(log_excerpt, limit=2000) if log_excerpt else "",
             camera_captured=bool(jpeg),
-            screen_captured=bool(screen_png),
+            screen_captured=False,
             telegram_attempted=telegram_ok,
             telegram_delivered=delivered,
         )

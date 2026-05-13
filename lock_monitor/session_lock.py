@@ -16,12 +16,13 @@ logger = logging.getLogger(__name__)
 
 # Log once if session DBus is unreachable (wrong uid / permission).
 _dbus_access_warned = False
-# Log once if runuser+gdbus fails for root (helps debug "input but not locked").
+# Log once if privilege-drop gdbus fails for root (helps debug "input but not locked").
 _runuser_gdbus_fail_logged = False
 _runuser_missing_logged = False
 
 _CACHE: tuple[bool | None, float] = (None, 0.0)
 _CACHE_LOCK = threading.Lock()
+_CACHE_REFRESH_LOCK = threading.Lock()
 _CACHE_TTL_SEC = 1.5
 _SESSION_LIST_CACHE: tuple[list[dict[str, Any]] | None, float] = (None, 0.0)
 _SESSION_LIST_TTL_SEC = 10.0
@@ -29,6 +30,8 @@ _DBUS_UIDS_CACHE: tuple[list[int] | None, float] = (None, 0.0)
 _DBUS_UIDS_TTL_SEC = 10.0
 _DBUS_METHOD_CACHE: dict[int, tuple[tuple[tuple[str, str, str], ...], float]] = {}
 _DBUS_METHOD_TTL_SEC = 60.0
+_DBUS_NO_METHOD_CACHE: dict[int, float] = {}
+_DBUS_NO_METHOD_TTL_SEC = 10.0
 
 
 def set_lock_cache_ttl(seconds: float) -> None:
@@ -175,7 +178,11 @@ def _dbus_uids_to_probe() -> list[int]:
     return ordered
 
 
-def _log_runuser_gdbus_failure(r: subprocess.CompletedProcess[str], dest: str) -> None:
+def _log_privdrop_gdbus_failure(
+    r: subprocess.CompletedProcess[str],
+    dest: str,
+    helper: str,
+) -> None:
     global _runuser_gdbus_fail_logged
     if _runuser_gdbus_fail_logged or os.getuid() != 0:
         return
@@ -186,7 +193,8 @@ def _log_runuser_gdbus_failure(r: subprocess.CompletedProcess[str], dest: str) -
         return
     _runuser_gdbus_fail_logged = True
     logger.warning(
-        "runuser+gdbus failed for %s (exit=%s). Sample stderr: %s",
+        "%s+gdbus failed for %s (exit=%s). Sample stderr: %s",
+        helper,
         dest,
         r.returncode,
         (err[:500] or "(empty)").strip(),
@@ -202,7 +210,7 @@ def _parse_gdbus_bool(r: subprocess.CompletedProcess[str]) -> bool | None:
             "Permission denied" in err or "Could not connect" in err
         ):
             logger.warning(
-                "DBus session bus not usable (%s). As root, ensure util-linux (runuser) is installed "
+                "DBus session bus not usable (%s). As root, ensure util-linux (setpriv/runuser) is installed "
                 "so RAAS can query the desktop user's session bus.",
                 (err[:200] or "error").strip(),
             )
@@ -223,8 +231,8 @@ def _gdbus_get_active(dest: str, object_path: str, method: str, *, for_uid: int)
     """
     Call GetActive on a screensaver interface for the given login uid's session bus.
 
-    When RAAS runs as root, we invoke gdbus via `runuser` so the connection matches the
-    desktop user's session bus (direct root access is often rejected).
+    When RAAS runs as root, we invoke gdbus as the desktop uid so the connection
+    matches the user's session bus (direct root access is often rejected).
     """
     global _runuser_missing_logged
     bus_path = f"/run/user/{for_uid}/bus"
@@ -235,45 +243,71 @@ def _gdbus_get_active(dest: str, object_path: str, method: str, *, for_uid: int)
     if not gdbus:
         return None
 
-    use_runuser = os.getuid() == 0 and for_uid != 0
-    runuser_bin = shutil.which("runuser") if use_runuser else None
+    use_privdrop = os.getuid() == 0 and for_uid != 0
+    setpriv_bin = shutil.which("setpriv") if use_privdrop else None
+    runuser_bin = shutil.which("runuser") if use_privdrop else None
 
-    if use_runuser and not runuser_bin:
+    if use_privdrop and not (setpriv_bin or runuser_bin):
         if not _runuser_missing_logged:
             logger.warning(
-                "util-linux `runuser` not in PATH — root cannot run gdbus as the desktop user. "
+                "util-linux `setpriv`/`runuser` not in PATH — root cannot run gdbus as the desktop user. "
                 "Install util-linux (e.g. apt install util-linux) or run RAAS without sudo.",
             )
             _runuser_missing_logged = True
 
-    if use_runuser and runuser_bin:
+    gdbus_call = [
+        gdbus,
+        "call",
+        "--session",
+        "--dest",
+        dest,
+        "--object-path",
+        object_path,
+        "--method",
+        method,
+    ]
+
+    if use_privdrop and (setpriv_bin or runuser_bin):
         try:
-            uname = pwd.getpwuid(for_uid).pw_name
+            pwent = pwd.getpwuid(for_uid)
         except KeyError:
             return None
+
+        if setpriv_bin:
+            cmd = [
+                setpriv_bin,
+                "--reuid",
+                str(for_uid),
+                "--regid",
+                str(pwent.pw_gid),
+                "--init-groups",
+                "env",
+                f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus_path}",
+                f"XDG_RUNTIME_DIR=/run/user/{for_uid}",
+                *gdbus_call,
+            ]
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
+            except (OSError, subprocess.SubprocessError):
+                return None
+            _log_privdrop_gdbus_failure(r, dest, "setpriv")
+            return _parse_gdbus_bool(r)
+
         cmd = [
             runuser_bin,
             "-u",
-            uname,
+            pwent.pw_name,
             "--",
             "env",
             f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus_path}",
             f"XDG_RUNTIME_DIR=/run/user/{for_uid}",
-            gdbus,
-            "call",
-            "--session",
-            "--dest",
-            dest,
-            "--object-path",
-            object_path,
-            "--method",
-            method,
+            *gdbus_call,
         ]
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
         except (OSError, subprocess.SubprocessError):
             return None
-        _log_runuser_gdbus_failure(r, dest)
+        _log_privdrop_gdbus_failure(r, dest, "runuser")
         return _parse_gdbus_bool(r)
 
     env = _session_bus_env_for_uid(for_uid)
@@ -281,17 +315,7 @@ def _gdbus_get_active(dest: str, object_path: str, method: str, *, for_uid: int)
         return None
     try:
         r = subprocess.run(
-            [
-                gdbus,
-                "call",
-                "--session",
-                "--dest",
-                dest,
-                "--object-path",
-                object_path,
-                "--method",
-                method,
-            ],
+            gdbus_call,
             capture_output=True,
             text=True,
             timeout=2,
@@ -315,6 +339,10 @@ def _locked_hint_dbus() -> bool:
             known_methods = cached_methods if now - cached_at < _DBUS_METHOD_TTL_SEC else ()
             if cached_methods and not known_methods:
                 _DBUS_METHOD_CACHE.pop(uid, None)
+            no_method_at = _DBUS_NO_METHOD_CACHE.get(uid, 0.0)
+            no_methods_recent = bool(no_method_at and now - no_method_at < _DBUS_NO_METHOD_TTL_SEC)
+            if no_method_at and not no_methods_recent:
+                _DBUS_NO_METHOD_CACHE.pop(uid, None)
 
         if known_methods:
             responsive: list[tuple[str, str, str]] = []
@@ -327,7 +355,10 @@ def _locked_hint_dbus() -> bool:
             if responsive:
                 with _CACHE_LOCK:
                     _DBUS_METHOD_CACHE[uid] = (tuple(responsive), cached_at)
+                    _DBUS_NO_METHOD_CACHE.pop(uid, None)
                 continue
+        elif no_methods_recent:
+            continue
 
         responsive = []
         for dest, path, method in _DBUS_GET_ACTIVE:
@@ -336,12 +367,17 @@ def _locked_hint_dbus() -> bool:
                 responsive.append((dest, path, method))
                 with _CACHE_LOCK:
                     _DBUS_METHOD_CACHE[uid] = (tuple(responsive), now)
+                    _DBUS_NO_METHOD_CACHE.pop(uid, None)
                 return True
             if v is False:
                 responsive.append((dest, path, method))
         if responsive:
             with _CACHE_LOCK:
                 _DBUS_METHOD_CACHE[uid] = (tuple(responsive), now)
+                _DBUS_NO_METHOD_CACHE.pop(uid, None)
+        else:
+            with _CACHE_LOCK:
+                _DBUS_NO_METHOD_CACHE[uid] = time.monotonic()
     return False
 
 
@@ -395,7 +431,8 @@ def format_lock_diagnosis() -> str:
     lines.append(f"graphical/logind uids: {_seat_session_uids()}")
     lines.append(f"DBus uids to probe: {uids}")
     if os.getuid() == 0:
-        lines.append(f"runuser for session gdbus: {shutil.which('runuser') or '(not found — install util-linux)'}")
+        lines.append(f"setpriv for session gdbus: {shutil.which('setpriv') or '(not found — install util-linux)'}")
+        lines.append(f"runuser fallback for session gdbus: {shutil.which('runuser') or '(not found — install util-linux)'}")
     if not uids:
         lines.append("(no session bus paths — DBus lock checks skipped)")
     for uid in uids:
@@ -427,10 +464,18 @@ def is_session_locked(*, use_cache: bool = True) -> bool:
         if use_cache and _CACHE[0] is not None and (now - _CACHE[1]) < _CACHE_TTL_SEC:
             return _CACHE[0]
 
-    locked = _session_locked_combined()
-    with _CACHE_LOCK:
-        _CACHE = (locked, now)
-    return locked
+    with _CACHE_REFRESH_LOCK:
+        now = time.monotonic()
+        with _CACHE_LOCK:
+            if use_cache and _CACHE[0] is not None and (now - _CACHE[1]) < _CACHE_TTL_SEC:
+                return _CACHE[0]
+
+        locked = _session_locked_combined()
+        checked_at = time.monotonic()
+
+        with _CACHE_LOCK:
+            _CACHE = (locked, checked_at)
+        return locked
 
 
 def invalidate_lock_cache() -> None:
@@ -440,6 +485,7 @@ def invalidate_lock_cache() -> None:
         _DBUS_UIDS_CACHE = (None, 0.0)
         _SESSION_LIST_CACHE = (None, 0.0)
         _DBUS_METHOD_CACHE.clear()
+        _DBUS_NO_METHOD_CACHE.clear()
 
 
 def _locked_hint_loginctl() -> bool:

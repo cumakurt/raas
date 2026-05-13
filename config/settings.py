@@ -103,21 +103,21 @@ class LockIntrusionConfig:
     # Poll auth.log for failed greeter / lock-screen PAM failures while locked.
     watch_auth_failures: bool = True
     auth_poll_interval_seconds: float = 1.0
-    auth_failure_min_interval_seconds: float = 0.4
+    auth_failure_min_interval_seconds: float = 10.0
     # Notify when lock state goes from locked -> unlocked (successful unlock).
     notify_on_unlock: bool = True
-    unlock_poll_interval_seconds: float = 1.0
+    unlock_poll_interval_seconds: float = 2.0
     camera_device: str = "/dev/video0"
     prefer_ffmpeg: bool = True
     capture_width: int | None = None
     capture_height: int | None = None
-    capture_screen: bool = True
+    capture_screen: bool = False
     capture_webcam: bool = True
     desktop_uid: int | None = None
     # select() timeout for evdev (seconds); higher = lower idle wakeups / CPU.
     input_select_timeout_seconds: float = 1.0
     # Max age for lock-state cache during input watch (DBus/loginctl is expensive).
-    lock_state_cache_ttl_seconds: float = 1.5
+    lock_state_cache_ttl_seconds: float = 3.0
 
 
 @dataclass
@@ -408,14 +408,14 @@ def load_settings(config_path: Path | None = None) -> Settings:
         media_cooldown_seconds=float(li.get("media_cooldown_seconds", 2.5)),
         watch_auth_failures=bool(li.get("watch_auth_failures", True)),
         auth_poll_interval_seconds=float(li.get("auth_poll_interval_seconds", 1.0)),
-        auth_failure_min_interval_seconds=float(li.get("auth_failure_min_interval_seconds", 0.4)),
+        auth_failure_min_interval_seconds=float(li.get("auth_failure_min_interval_seconds", 10.0)),
         notify_on_unlock=bool(li.get("notify_on_unlock", True)),
-        unlock_poll_interval_seconds=float(li.get("unlock_poll_interval_seconds", 1.0)),
+        unlock_poll_interval_seconds=float(li.get("unlock_poll_interval_seconds", 2.0)),
         camera_device=str(li.get("camera_device", "/dev/video0")),
         prefer_ffmpeg=bool(li.get("prefer_ffmpeg", True)),
         capture_width=int(li["capture_width"]) if li.get("capture_width") is not None else None,
         capture_height=int(li["capture_height"]) if li.get("capture_height") is not None else None,
-        capture_screen=bool(li.get("capture_screen", True)),
+        capture_screen=bool(li.get("capture_screen", False)),
         capture_webcam=bool(li.get("capture_webcam", True)),
         desktop_uid=int(li["desktop_uid"]) if li.get("desktop_uid") is not None else None,
         input_select_timeout_seconds=max(
@@ -424,7 +424,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         ),
         lock_state_cache_ttl_seconds=max(
             0.05,
-            min(3.0, float(li.get("lock_state_cache_ttl_seconds", 1.5))),
+            min(3.0, float(li.get("lock_state_cache_ttl_seconds", 3.0))),
         ),
     )
 

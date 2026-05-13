@@ -120,7 +120,7 @@ def run_input_watch(
             logger.warning(
                 "No accessible input devices (/dev/input/event*) — lock-intrusion input monitoring is disabled. "
                 "As root, ensure /dev/input/* nodes exist and are readable; lock detection still uses "
-                "DBus (via runuser), logind, and pgrep without input devices.",
+                "DBus (via setpriv/runuser), logind, and pgrep without input devices.",
             )
         else:
             logger.warning(
@@ -139,7 +139,7 @@ def run_input_watch(
         len(devices),
         cooldown,
         ptr_throttle,
-        settings.lock_intrusion.media_cooldown_seconds,
+        mt.media_cooldown_seconds,
     )
 
     if not telegram_ok:
@@ -206,7 +206,7 @@ def run_input_watch(
                                 last_lock_deny_log = t0
                                 logger.warning(
                                     "Lock intrusion: input seen but lock not detected (DBus/logind/pgrep). "
-                                    "If running as root: ensure util-linux (runuser) is installed. "
+                                    "If running as root: ensure util-linux (setpriv/runuser) is installed. "
                                     "While locked: python3 /opt/raas/raas.py --diagnose-lock",
                                 )
                             continue
@@ -235,6 +235,15 @@ def run_input_watch(
                     continue
                 except OSError:
                     logger.warning("Input device read error: %s", getattr(dev, "name", dev.fd))
+                    try:
+                        dev.close()
+                    except OSError:
+                        pass
+                    devices = [d for d in devices if d is not dev]
+                    fds = [d.fd for d in devices]
+                    if not devices:
+                        logger.error("All input devices lost — stopping input watch")
+                        return
                     continue
     finally:
         for d in devices:

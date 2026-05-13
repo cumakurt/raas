@@ -40,7 +40,7 @@ Install from the repo: `pip install -r requirements.txt`
 
 ### Optional system tools (lock intrusion + media)
 
-For **full** lock-screen alerts (DBus lock detection, `/dev/input`, **screen** + **webcam** to Telegram), install OS packages such as **`gdbus`** (usually **`dbus`**), **`util-linux`** (`runuser`), **`grim`** (Wayland), **`ffmpeg`** and/or **ImageMagick** (X11 screen + camera). Non-root users often need the **`input`** (and sometimes **`video`**) group.
+For **full** lock-screen alerts (DBus lock detection, `/dev/input`, **screen** + **webcam** to Telegram), install OS packages such as **`gdbus`** (usually **`dbus`**), **`util-linux`** (`setpriv`/`runuser`), **`grim`** (Wayland), **`ffmpeg`** and/or **ImageMagick** (X11 screen + camera). Non-root users often need the **`input`** (and sometimes **`video`**) group.
 
 **Full matrix by distro and desktop:** **[DEPENDENCIES.md](DEPENDENCIES.md)** (English) and **[DEPENDENCIES.tr.md](DEPENDENCIES.tr.md)** (Türkçe).
 

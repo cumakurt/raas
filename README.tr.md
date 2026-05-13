@@ -38,7 +38,7 @@ Depoda: `pip install -r requirements.txt`
 
 ### İsteğe bağlı sistem araçları (kilit ihlali + medya)
 
-**Tam** kilit ekranı uyarıları (DBus ile kilit algısı, `/dev/input`, Telegram’a **ekran** + **webcam**) için işletim sistemi paketleri gerekir: örneğin **`gdbus`** (genelde **`dbus`**), **`util-linux`** (`runuser`), Wayland için **`grim`**, **X11** için **`ffmpeg`** ve/veya **ImageMagick**. Root olmayan kullanıcılar için çoğu zaman **`input`** ve gerekiyorsa **`video`** grubu.
+**Tam** kilit ekranı uyarıları (DBus ile kilit algısı, `/dev/input`, Telegram’a **ekran** + **webcam**) için işletim sistemi paketleri gerekir: örneğin **`gdbus`** (genelde **`dbus`**), **`util-linux`** (`setpriv`/`runuser`), Wayland için **`grim`**, **X11** için **`ffmpeg`** ve/veya **ImageMagick**. Root olmayan kullanıcılar için çoğu zaman **`input`** ve gerekiyorsa **`video`** grubu.
 
 **Dağıtım ve masaüstüne göre tam liste:** **[DEPENDENCIES.tr.md](DEPENDENCIES.tr.md)** (Türkçe) ve **[DEPENDENCIES.md](DEPENDENCIES.md)** (English).
 

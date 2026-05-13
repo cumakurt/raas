@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 
 from config.settings import Settings
 from lock_monitor.intrusion_notify import LockMediaThrottle, send_lock_intrusion_alert
@@ -43,6 +44,12 @@ def run_unlock_transition_watch(
     poll = max(0.1, float(settings.lock_intrusion.unlock_poll_interval_seconds))
     prev_locked: bool | None = None
     desktop_uid = _desktop_uid(settings)
+    min_emit_gap = max(
+        0.0,
+        float(settings.lock_intrusion.cooldown_seconds),
+        float(settings.lock_intrusion.media_cooldown_seconds),
+    )
+    last_emit: float | None = None
 
     logger.info("Unlock transition watch active (poll=%ss)", poll)
 
@@ -51,6 +58,11 @@ def run_unlock_transition_watch(
             break
         locked = is_session_locked(use_cache=True)
         if prev_locked is True and not locked:
+            now = time.monotonic()
+            if last_emit is not None and now - last_emit < min_emit_gap:
+                prev_locked = locked
+                continue
+            last_emit = now
             send_lock_intrusion_alert(
                 settings,
                 notifier,

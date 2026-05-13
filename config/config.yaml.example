@@ -1,7 +1,7 @@
 # RAAS — copy to config.yaml and fill in values. All runtime settings live here.
 #
 # System tools (optional, for lock-intrusion + Telegram photos):
-#   - dbus / gdbus, util-linux (runuser) — lock detection when running as root
+#   - dbus / gdbus, util-linux (setpriv/runuser) — lock detection when running as root
 #   - grim (Wayland) or ffmpeg / ImageMagick (X11) — screen capture
 #   - ffmpeg — webcam; input group — /dev/input (if not root)
 # Full per-distro list: DEPENDENCIES.md and DEPENDENCIES.tr.md in the repository root.
@@ -111,16 +111,16 @@ lock_intrusion:
   media_cooldown_seconds: 2.5
   watch_auth_failures: true
   auth_poll_interval_seconds: 1.0
-  auth_failure_min_interval_seconds: 0.4
+  auth_failure_min_interval_seconds: 10.0
   notify_on_unlock: true
-  unlock_poll_interval_seconds: 1.0
+  unlock_poll_interval_seconds: 2.0
   # evdev select() timeout (s); lock-state cache TTL reduces DBus/loginctl churn during input bursts.
   # input_select_timeout_seconds: 1.0
-  # lock_state_cache_ttl_seconds: 1.5
+  # lock_state_cache_ttl_seconds: 3.0
   camera_device: /dev/video0
   prefer_ffmpeg: true
   # Screen: grim (Wayland) or ffmpeg x11grab / ImageMagick import (X11). Webcam: ffmpeg or OpenCV.
-  capture_screen: true
+  capture_screen: false
   capture_webcam: true
   # desktop_uid: 1000   # optional; omit = auto (first graphical session / DBus uid)
   # capture_width: 1280

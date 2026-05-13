@@ -59,7 +59,11 @@ def run_auth_unlock_watch(
 
     poll = max(0.1, float(settings.lock_intrusion.auth_poll_interval_seconds))
     last_emit = 0.0
-    min_gap = max(0.0, float(settings.lock_intrusion.auth_failure_min_interval_seconds))
+    min_gap = max(
+        0.0,
+        float(settings.lock_intrusion.auth_failure_min_interval_seconds),
+        float(settings.lock_intrusion.cooldown_seconds),
+    )
 
     logger.info(
         "Lock auth-failure watch active (poll=%ss, min_gap=%ss)",
@@ -119,6 +123,5 @@ def run_auth_unlock_watch(
                 input_kind="lock_auth_failure",
                 desktop_uid=_desktop_uid(settings),
                 media_throttle=media_throttle,
-                extra_text="Failed unlock attempt (from auth log). Password is never sent by RAAS.",
                 log_excerpt=line[:800],
             )
