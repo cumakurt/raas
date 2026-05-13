@@ -23,6 +23,10 @@ Sample critical file deletion alert:
 
 ![RAAS critical file deletion alert in Telegram](delete_log.png)
 
+Sample lock intrusion alert:
+
+![RAAS lock intrusion alert in Telegram](lock.png)
+
 ## Linux portability
 
 - **Auth log path:** when `log.backend` is `file` (default), set `log.path` to `auto` (recommended) to use the first existing file among `/var/log/auth.log` (Debian, Ubuntu, Kali, …) and `/var/log/secure` (RHEL, Fedora, Alma, Rocky, …). You can still set an explicit path.
