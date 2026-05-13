@@ -1,0 +1,15 @@
+# RAAS critical system path watch list.
+# One absolute directory path per line. Blank lines and comments are ignored.
+# This file is intentionally separate from config.yaml so monitored paths can be changed independently.
+/etc
+/bin
+/sbin
+/usr/bin
+/usr/sbin
+/usr/local/bin
+/usr/local/sbin
+/usr/lib
+/lib
+/lib64
+/boot
+/root

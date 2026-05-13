@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
 # RAAS full installer: detects OS & dependencies, asks for confirmation, then installs
-# to /opt/raas (including /opt/raas/config/config.yaml), venv + pip, systemd unit (root), starts service.
+# to /opt/raas (including /opt/raas/config/config.yaml and file.config), venv + pip,
+# systemd unit (root), starts service.
 # If config.yaml already exists (reinstall/upgrade), it is never overwritten; the shipped example is
 # written as config.yaml.new in the same directory so you can diff and merge new options manually.
+# The same protection is used for file.config, which controls critical system file watches.
 #
 # Optional OS packages (grim, ffmpeg, dbus tools for lock/screen): see DEPENDENCIES.md
 #
@@ -252,6 +254,7 @@ echo "[1/5] Copying application files..."
 mkdir -p "${INSTALL_ROOT}"
 # Never let rsync --delete remove the live config: it is not in the repo tree, so without
 # protect it would be deleted and step [3/5] would mistakenly create a fresh config from example.
+# file.config is also protected because operators edit critical path watches there.
 rsync -a --delete \
   --exclude='.git' \
   --exclude='.venv' \
@@ -259,7 +262,9 @@ rsync -a --delete \
   --exclude='*.pyc' \
   --exclude='.cursor' \
   --exclude='config/config.yaml' \
+  --exclude='config/file.config' \
   --filter='P config/config.yaml' \
+  --filter='P config/file.config' \
   "${REPO_ROOT}/" "${INSTALL_ROOT}/"
 
 echo "[2/5] Python virtualenv and Python dependencies..."
@@ -271,6 +276,8 @@ echo "[3/5] Configuration..."
 mkdir -p "${CFG_DIR}"
 CFG_CREATED=0
 CFG_NEW_WRITTEN=0
+FILECFG_CREATED=0
+FILECFG_NEW_WRITTEN=0
 if [[ ! -f "${CFG_DIR}/config.yaml" ]]; then
   cp "${INSTALL_ROOT}/config/config.yaml.example" "${CFG_DIR}/config.yaml"
   chmod 600 "${CFG_DIR}/config.yaml"
@@ -280,6 +287,15 @@ else
   cp "${INSTALL_ROOT}/config/config.yaml.example" "${CFG_DIR}/config.yaml.new"
   chmod 600 "${CFG_DIR}/config.yaml.new"
   CFG_NEW_WRITTEN=1
+fi
+if [[ ! -f "${CFG_DIR}/file.config" ]]; then
+  cp "${INSTALL_ROOT}/config/file.config.example" "${CFG_DIR}/file.config"
+  chmod 600 "${CFG_DIR}/file.config"
+  FILECFG_CREATED=1
+else
+  cp "${INSTALL_ROOT}/config/file.config.example" "${CFG_DIR}/file.config.new"
+  chmod 600 "${CFG_DIR}/file.config.new"
+  FILECFG_NEW_WRITTEN=1
 fi
 
 echo "[4/5] systemd unit..."
@@ -315,24 +331,40 @@ echo ""
 echo "  Paths"
 echo "    Application directory:  ${INSTALL_ROOT}"
 echo "    Configuration file:     ${CFG_DIR}/config.yaml"
+echo "    Critical path file:     ${CFG_DIR}/file.config"
 if [[ "${CFG_NEW_WRITTEN}" -eq 1 ]]; then
   echo "    Shipped example (merge): ${CFG_DIR}/config.yaml.new"
 fi
+if [[ "${FILECFG_NEW_WRITTEN}" -eq 1 ]]; then
+  echo "    Path example (merge):    ${CFG_DIR}/file.config.new"
+fi
 echo "    systemd unit:           ${UNIT_DST}"
 echo ""
-if [[ "${CFG_CREATED}" -eq 1 ]]; then
+if [[ "${CFG_CREATED}" -eq 1 ]] || [[ "${FILECFG_CREATED}" -eq 1 ]]; then
   echo "  Configuration"
-  echo "    A new ${CFG_DIR}/config.yaml was created from the example."
-  echo "    Edit at least:  telegram.bot_token  and  telegram.chat_id"
+  if [[ "${CFG_CREATED}" -eq 1 ]]; then
+    echo "    A new ${CFG_DIR}/config.yaml was created from the example."
+    echo "    Edit at least:  telegram.bot_token  and  telegram.chat_id"
+  fi
+  if [[ "${FILECFG_CREATED}" -eq 1 ]]; then
+    echo "    A new ${CFG_DIR}/file.config was created for critical system path watches."
+  fi
   echo "    Then run:         systemctl restart raas"
   echo ""
-elif [[ "${CFG_NEW_WRITTEN}" -eq 1 ]]; then
+elif [[ "${CFG_NEW_WRITTEN}" -eq 1 ]] || [[ "${FILECFG_NEW_WRITTEN}" -eq 1 ]]; then
   echo "  Configuration"
-  echo "    Existing ${CFG_DIR}/config.yaml was NOT modified."
-  echo "    The version shipped with this release was written as:"
-  echo "      ${CFG_DIR}/config.yaml.new"
-  echo "    Compare with your live config and merge new keys/options if you need them, then remove"
-  echo "    or rename config.yaml.new. Restart the service only after editing config.yaml."
+  if [[ "${CFG_NEW_WRITTEN}" -eq 1 ]]; then
+    echo "    Existing ${CFG_DIR}/config.yaml was NOT modified."
+    echo "    The version shipped with this release was written as:"
+    echo "      ${CFG_DIR}/config.yaml.new"
+  fi
+  if [[ "${FILECFG_NEW_WRITTEN}" -eq 1 ]]; then
+    echo "    Existing ${CFG_DIR}/file.config was NOT modified."
+    echo "    The path list shipped with this release was written as:"
+    echo "      ${CFG_DIR}/file.config.new"
+  fi
+  echo "    Compare with your live files and merge new keys/options if you need them."
+  echo "    Restart the service only after editing configuration."
   echo ""
 fi
 echo "  Service"

@@ -125,6 +125,7 @@ class FileDeletionConfig:
     """inotify watcher for critical system path deletion/modification events."""
 
     enabled: bool = True
+    paths_config_path: Path = field(default_factory=lambda: Path("file.config"))
     paths: tuple[Path, ...] = ()
     recursive: bool = True
     include_moves: bool = True
@@ -315,22 +316,6 @@ def _parse_telegram_parse_mode(raw: Any) -> str:
     return "HTML"
 
 
-def _parse_path_tuple(raw: Any) -> tuple[Path, ...]:
-    if raw is None:
-        return ()
-    if isinstance(raw, (str, Path)):
-        s = str(raw).strip()
-        return (Path(s).expanduser(),) if s else ()
-    if isinstance(raw, list):
-        out: list[Path] = []
-        for item in raw:
-            s = str(item).strip()
-            if s:
-                out.append(Path(s).expanduser())
-        return tuple(out)
-    return ()
-
-
 def _parse_str_tuple(raw: Any) -> tuple[str, ...]:
     if raw is None:
         return ()
@@ -340,6 +325,39 @@ def _parse_str_tuple(raw: Any) -> tuple[str, ...]:
     if isinstance(raw, list):
         return tuple(str(x).strip() for x in raw if str(x).strip())
     return ()
+
+
+def _file_deletion_paths_config_path(main_config_path: Path) -> Path:
+    return main_config_path.expanduser().resolve().with_name("file.config")
+
+
+def _parse_file_deletion_paths(raw: str) -> tuple[Path, ...]:
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for line in raw.splitlines():
+        text = line.partition("#")[0].strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            logger.warning("Ignoring non-absolute path in file.config: %s", text)
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append(path)
+    return tuple(out)
+
+
+def _load_file_deletion_paths(paths_config_path: Path) -> tuple[Path, ...]:
+    try:
+        return _parse_file_deletion_paths(paths_config_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        logger.info("file.config not found at %s; using built-in critical system paths", paths_config_path)
+        return ()
+    except OSError as e:
+        logger.warning("Cannot read file.config at %s: %s; using built-in critical system paths", paths_config_path, e)
+        return ()
 
 
 def load_settings(config_path: Path | None = None) -> Settings:
@@ -470,9 +488,11 @@ def load_settings(config_path: Path | None = None) -> Settings:
     )
 
     fd = cfg.get("file_deletion") if isinstance(cfg.get("file_deletion"), dict) else {}
+    file_deletion_paths_config = _file_deletion_paths_config_path(path)
     file_deletion = FileDeletionConfig(
         enabled=bool(fd.get("enabled", True)),
-        paths=_parse_path_tuple(fd.get("paths")),
+        paths_config_path=file_deletion_paths_config,
+        paths=_load_file_deletion_paths(file_deletion_paths_config),
         recursive=bool(fd.get("recursive", True)),
         include_moves=bool(fd.get("include_moves", True)),
         cooldown_seconds=max(0.0, float(fd.get("cooldown_seconds", 1.0))),

@@ -132,8 +132,8 @@ Send **`SIGHUP`** to the main process (e.g. `kill -HUP $(pidof -x python3)` matc
 | `deliveries.telegram: false`, HTTP 404 | `telegram.api_base_url` must be `https://api.telegram.org` only (no `/bot` in the URL) |
 | High alert volume | Raise `risk.notify_threshold`, use `notify_threshold_by_kind`, enable `alert_coalesce`, or add `ignore_source_ips` / `ignore_users` |
 | Telegram 401 / 400 | Invalid `bot_token` or `chat_id`; bot not started in DM; group/channel permissions |
-| No file-deletion alerts | `file_deletion.enabled: true` in YAML; service must run as root (inotify needs read access to `/etc`, `/boot`, etc.); check `journalctl -u raas` for `File deletion monitor active` |
-| Too many file-deletion alerts | Add path glob to `file_deletion.ignore_globs`; raise `file_deletion.cooldown_seconds`; lower score with `risk.scores.file_modified: 30` |
+| No file-deletion alerts | `file_deletion.enabled: true` in YAML; check the critical path list in `/opt/raas/config/file.config`; service must run as root (inotify needs read access to `/etc`, `/boot`, etc.); check `journalctl -u raas` for `File deletion monitor active` |
+| Too many file-deletion alerts | Narrow `/opt/raas/config/file.config`; add a path glob to `file_deletion.ignore_globs`; raise `file_deletion.cooldown_seconds`; lower score with `risk.scores.file_modified: 30` |
 
 **Uninstall** (stop/disable unit; files kept unless `--purge`):
 
@@ -239,7 +239,7 @@ The unified parser (`parser/log_parser.py`) first applies **SSH/OpenSSH** rules 
 
 ## Critical system file integrity monitoring
 
-RAAS includes a dedicated **inotify watcher** (`watcher/file_delete_watch.py`) that monitors a curated set of **critical Linux system directories** — and nothing else. It does **not** watch home directories, user data, or the full filesystem.
+RAAS includes a dedicated **inotify watcher** (`watcher/file_delete_watch.py`) that monitors a curated set of **critical Linux system directories** — and nothing else. It does **not** watch home directories, user data, or the full filesystem unless you explicitly add such paths to `file.config`.
 
 ### Default watched paths
 
@@ -253,7 +253,25 @@ RAAS includes a dedicated **inotify watcher** (`watcher/file_delete_watch.py`) t
 | `/boot` | Kernel, initrd, GRUB files |
 | `/root` | Root account home directory |
 
-All paths can be overridden via `file_deletion.paths` in YAML.
+Watched paths are **not** configured in the main YAML file. Edit the separate `file.config` file next to `config.yaml`:
+
+- Installed service: `/opt/raas/config/file.config`
+- Repository/development default: `config/file.config` (copy from `config/file.config.example` if the file is not present)
+
+Format: one absolute directory path per line. Blank lines and lines starting with `#` are ignored. If the file is missing or has no valid absolute paths, RAAS falls back to the built-in critical system paths above.
+
+Example `file.config`:
+
+```text
+# Critical system paths only
+/etc
+/bin
+/sbin
+/usr/bin
+/usr/sbin
+/boot
+/root
+```
 
 ### Detected actions
 
@@ -265,15 +283,12 @@ All paths can be overridden via `file_deletion.paths` in YAML.
 
 Both event kinds pass through the standard risk engine → notifier pipeline (Telegram HTML alert + webhook JSON + alarm file). Score overrides: `risk.scores.file_deleted` / `risk.scores.file_modified` in YAML.
 
-### Example config (`file_deletion` block)
+### Main YAML options (`file_deletion` block)
 
 ```yaml
 file_deletion:
   enabled: true
-  # Override default critical paths (optional — leave unset to use built-in list)
-  # paths:
-  #   - /etc
-  #   - /boot
+  # Watched paths live in file.config, not here.
   recursive: true
   include_moves: true
   cooldown_seconds: 1.0
@@ -298,7 +313,7 @@ See **`config/config.yaml.example`** for all keys and comments.
 - **`health`** — optional JSON **`GET /`** and **`GET /health`** on `bind`:`port` (default `127.0.0.1:8765`, `enabled: false`). Extended counters (coalesce/quiet suppressions, Telegram success/fail, config reloads, etc.).
 - **`prometheus`** — when `enabled: true` and **`health.enabled`**, **`GET /metrics`** on the **same** bind/port exposes **Prometheus** text metrics.
 - **`lock_intrusion`** — alert when input is detected while the session is locked (enabled by default; set `enabled: false` to turn off)
-- **`file_deletion`** — **inotify-based watcher** for critical Linux system paths only. Keys: `enabled` (default `true`), `paths` (list of directories; omit to use the built-in critical-path list), `recursive` (default `true`), `include_moves` (emit alert on `IN_MOVED_FROM`; default `true`), `cooldown_seconds` (minimum seconds between repeated alerts for the same path; default `1.0`), `ignore_globs` (list of glob patterns to skip), `max_watch_dirs` (hard cap on inotify descriptors; default `4096`). Fires `file_deleted` (score 80, MITRE T1485) and `file_modified` (score 75, MITRE T1565) events through the normal risk → notifier pipeline.
+- **`file_deletion`** — **inotify-based watcher** for critical Linux system paths only. Watched paths are loaded from `file.config` next to `config.yaml`, not from the main YAML. YAML keys: `enabled` (default `true`), `recursive` (default `true`), `include_moves` (emit alert on `IN_MOVED_FROM`; default `true`), `cooldown_seconds` (minimum seconds between repeated alerts for the same path; default `1.0`), `ignore_globs` (list of glob patterns to skip), `max_watch_dirs` (hard cap on inotify descriptors; default `4096`). Fires `file_deleted` (score 80, MITRE T1485) and `file_modified` (score 75, MITRE T1565) events through the normal risk → notifier pipeline.
 
 ### Lock screen, input, screen capture, and webcam
 

@@ -128,11 +128,9 @@ lock_intrusion:
 
 # Critical system file integrity monitoring: inotify watches only curated system paths by default.
 # Deletion/move-away events alert as file_deleted; content writes alert as file_modified.
+# Edit the watched critical paths in file.config next to this YAML file.
 file_deletion:
   enabled: true
-  # paths:
-  #   - /etc
-  #   - /boot
   recursive: true
   include_moves: true
   cooldown_seconds: 1.0

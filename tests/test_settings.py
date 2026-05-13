@@ -127,9 +127,6 @@ log:
   path: auto
 file_deletion:
   enabled: true
-  paths:
-    - /etc
-    - /boot
   recursive: false
   include_moves: false
   cooldown_seconds: 2.5
@@ -137,16 +134,25 @@ file_deletion:
     - "*/tmp/*"
   max_watch_dirs: 64
 """
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-        f.write(yaml_text)
-        p = Path(f.name)
-    try:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        p = root / "config.yaml"
+        p.write_text(yaml_text, encoding="utf-8")
+        (root / "file.config").write_text(
+            """
+# Critical system paths
+/etc
+/boot
+relative/path
+/etc
+""",
+            encoding="utf-8",
+        )
         s = load_settings(p)
+        assert s.file_deletion.paths_config_path == root / "file.config"
         assert tuple(str(x) for x in s.file_deletion.paths) == ("/etc", "/boot")
         assert s.file_deletion.recursive is False
         assert s.file_deletion.include_moves is False
         assert s.file_deletion.cooldown_seconds == 2.5
         assert s.file_deletion.ignore_globs == ("*/tmp/*",)
         assert s.file_deletion.max_watch_dirs == 64
-    finally:
-        p.unlink(missing_ok=True)
