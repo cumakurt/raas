@@ -59,11 +59,7 @@ def run_auth_unlock_watch(
 
     poll = max(0.1, float(settings.lock_intrusion.auth_poll_interval_seconds))
     last_emit = 0.0
-    min_gap = max(
-        0.0,
-        float(settings.lock_intrusion.auth_failure_min_interval_seconds),
-        float(settings.lock_intrusion.cooldown_seconds),
-    )
+    min_gap = max(0.0, float(settings.lock_intrusion.auth_failure_min_interval_seconds))
 
     logger.info(
         "Lock auth-failure watch active (poll=%ss, min_gap=%ss)",
@@ -107,7 +103,7 @@ def run_auth_unlock_watch(
         ]
         if not candidates:
             continue
-        if not is_session_locked(use_cache=True):
+        if not is_session_locked(use_cache=False):
             continue
 
         for line in candidates:

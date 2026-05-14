@@ -16,6 +16,13 @@ from utils.alarm_file_log import AlarmFileLogger
 logger = logging.getLogger(__name__)
 
 
+def _is_locked_for_input_event() -> bool:
+    if is_session_locked(use_cache=True):
+        return True
+    # Do not let a stale unlocked cache drop the first lock-screen input event.
+    return is_session_locked(use_cache=False)
+
+
 def _is_meaningful_event(ev: object, ecodes: object) -> bool:
     """Filter sync/repeat noise; count key down, mouse move, etc."""
     t = ev.type
@@ -200,7 +207,15 @@ def run_input_watch(
                         input_kind = _classify_input(ev, ecodes)
                         now = time.monotonic()
 
-                        if not is_session_locked(use_cache=True):
+                        if input_kind == "mouse":
+                            if now - last_rel_fire < ptr_throttle:
+                                continue
+                            last_rel_fire = now
+
+                        if cooldown > 0 and (now - last_global_fire) < cooldown:
+                            continue
+
+                        if not _is_locked_for_input_event():
                             t0 = time.monotonic()
                             if t0 - last_lock_deny_log >= 30.0:
                                 last_lock_deny_log = t0
@@ -211,15 +226,6 @@ def run_input_watch(
                                 )
                             continue
 
-                        if input_kind == "mouse":
-                            if now - last_rel_fire < ptr_throttle:
-                                continue
-
-                        if cooldown > 0 and (now - last_global_fire) < cooldown:
-                            continue
-
-                        if input_kind == "mouse":
-                            last_rel_fire = now
                         last_global_fire = now
 
                         send_lock_intrusion_alert(
